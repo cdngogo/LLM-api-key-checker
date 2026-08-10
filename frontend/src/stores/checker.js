@@ -420,6 +420,9 @@ export const useCheckerStore = defineStore('checker', () => {
         // 刷新缓冲区中剩余的结果
         flushResultBuffer();
 
+        // 完成后直接展示第一个有结果的分类，避免停留在空标签页。
+        resultsStore.activateFirstNonEmptyTab();
+
         isChecking.value = false;
         // 清理内存队列和去重集合
         jobQueue = null;
@@ -498,6 +501,7 @@ export const useCheckerStore = defineStore('checker', () => {
         }
 
         if (keysToProcess.length === 0) {
+            resultsStore.activateFirstNonEmptyTab();
             _postStatus("没有需要检测的 KEY（已去除重复项）", "info");
             return;
         }

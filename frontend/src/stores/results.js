@@ -3,6 +3,7 @@ import { ref, reactive, shallowRef } from 'vue';
 import { useConfigStore } from './config';
 import { categorizeTokenError } from '@/api';
 import { RESULT_CATEGORIES } from '@/constants';
+import { findFirstNonEmptyCategory } from '@/utils/resultCategories';
 
 /**
  * @description HTML 转义函数，防止 XSS 攻击。
@@ -261,6 +262,18 @@ export const useResultsStore = defineStore('results', () => {
     }
 
     /**
+     * @description 激活按标签顺序排列的第一个非空结果分类。
+     * @returns {boolean} - 是否找到了非空分类。
+     */
+    function activateFirstNonEmptyTab() {
+        const category = findFirstNonEmptyCategory(resultsProxy);
+        if (!category) return false;
+
+        activeTab.value = category;
+        return true;
+    }
+
+    /**
      * @description 设置指定类别的排序方式。
      * @param {string} category - 结果类别。
      * @param {string} value - 排序值（如 'default', 'balance-desc'）。
@@ -276,6 +289,7 @@ export const useResultsStore = defineStore('results', () => {
         sortState,
         addResults,
         clearResults,
+        activateFirstNonEmptyTab,
         setSort
     };
 });
