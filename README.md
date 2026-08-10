@@ -100,6 +100,17 @@
    npm run deploy
    ```
 
+### 使用 GitHub Actions 自动部署
+
+仓库包含 `.github/workflows/deploy-cloudflare.yml`，推送到 `main` 后会依次运行测试、构建前端，并部署 Worker 与静态资源。也可以在 GitHub Actions 页面手动触发。
+
+在仓库的 `Settings → Secrets and variables → Actions` 中添加以下 Repository secrets：
+
+- `CLOUDFLARE_API_TOKEN`：具有 Cloudflare Workers 编辑权限的 API Token。
+- `CLOUDFLARE_ACCOUNT_ID`：Worker 所属 Cloudflare Account ID。
+
+首次部署会同时应用 `wrangler.toml` 中声明的 Durable Object 迁移。
+
 ## 📖 使用指南
 
 ### 基本使用
