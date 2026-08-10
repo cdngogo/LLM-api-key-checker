@@ -30,7 +30,7 @@
                 :class="{ active: selectedAdditionalProvider, open: uiStore.providerDropdownOpen }"
                 :disabled="checkerStore.isChecking" aria-haspopup="listbox"
                 :aria-expanded="uiStore.providerDropdownOpen" @click="toggleDropdown">
-                <span>更多预置</span>
+                <span>更多</span>
                 <span class="dropdown-chevron" aria-hidden="true"></span>
             </button>
         </div>
@@ -253,7 +253,7 @@ watch(providerKeys, (keys) => {
 
 .provider-preset-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(104px, auto);
+    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(72px, auto);
     gap: 8px;
 }
 
