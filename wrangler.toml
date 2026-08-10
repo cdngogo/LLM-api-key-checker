@@ -40,7 +40,8 @@ new_sqlite_classes = ["RequestRateLimiter"]
 
 # 环境变量配置
 [vars]
-# 额外允许的跨源前端白名单；同源前端无需配置。不要使用公共托管域的宽泛通配符。
+# 本地部署默认值；GitHub Actions 部署时由 Repository Variable ALLOWED_ORIGINS 覆盖。
+# 同源部署保持空数组；不要使用公共托管域的宽泛通配符。
 ALLOWED_ORIGINS = '[]'
 # 单个客户端 IP 在时间窗口内最多允许检测的 Token 数量（默认一小时 60,000 个）。
 MAX_TOKENS_PER_IP_PER_WINDOW = "60000"

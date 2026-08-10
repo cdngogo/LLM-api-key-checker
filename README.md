@@ -109,6 +109,12 @@
 - `CLOUDFLARE_API_TOKEN`：具有 Cloudflare Workers 编辑权限的 API Token。
 - `CLOUDFLARE_ACCOUNT_ID`：Worker 所属 Cloudflare Account ID。
 
+然后在同一页面的 `Variables` 中添加 Repository variable：
+
+- `ALLOWED_ORIGINS`：允许访问 Worker 的跨源前端来源，必须是 JSON 字符串数组，例如 `["https://checker.example.com"]`。同源部署可以不配置，工作流会默认使用 `[]`。
+
+工作流会校验变量格式，并通过 Wrangler 的 `--var` 参数覆盖 `wrangler.toml` 中的本地默认值。
+
 首次部署会同时应用 `wrangler.toml` 中声明的 Durable Object 迁移。
 
 ## 📖 使用指南
