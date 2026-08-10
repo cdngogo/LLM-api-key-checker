@@ -13,7 +13,7 @@ export type WebSocketMessageType = 'result' | 'batch_done' | 'error';
 /**
  * WebSocket 命令类型
  */
-export type WebSocketCommand = 'start' | 'done' | 'stop';
+export type WebSocketCommand = 'start' | 'pause' | 'resume' | 'done' | 'stop';
 
 /**
  * 待检测的 Key 对象

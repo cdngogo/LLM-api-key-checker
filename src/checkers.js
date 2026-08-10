@@ -5,6 +5,44 @@ import { normalizeBaseUrl } from './utils/url.js';
  * @description 余额获取失败时的默认返回值。
  */
 const BALANCE_UNAVAILABLE = { balance: -1, message: "有效但无法获取余额" };
+const MAX_VALIDATION_RESPONSE_BYTES = 2 * 1024 * 1024;
+
+async function readTextWithLimit(response, maxBytes = MAX_VALIDATION_RESPONSE_BYTES) {
+    if (!response.body) return '';
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let totalBytes = 0;
+    let text = '';
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalBytes += value.byteLength;
+            if (totalBytes > maxBytes) {
+                try { await reader.cancel('Validation response is too large'); } catch (_) {}
+                throw new Error(`Validation response exceeds ${maxBytes} bytes`);
+            }
+            text += decoder.decode(value, { stream: true });
+        }
+        text += decoder.decode();
+        return text;
+    } finally {
+        try { reader.releaseLock(); } catch (_) {}
+    }
+}
+
+async function readJsonWithLimit(response, maxBytes = MAX_VALIDATION_RESPONSE_BYTES) {
+    return JSON.parse(await readTextWithLimit(response, maxBytes));
+}
+
+async function discardResponseBody(response) {
+    try {
+        await response.body?.cancel();
+    } catch (_) {
+        // 响应可能已经结束或被超时中止。
+    }
+}
 
 /**
  * @description 包含所有特定于提供商的余额检查逻辑。
@@ -15,7 +53,7 @@ const balanceCheckers = {
         const creditsUrl = normalizeBaseUrl(baseUrl).replace("/v1", "") + "/v1/credits";
         const creditsResponse = await secureProxiedFetch(creditsUrl, { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env, 10000);
         if (creditsResponse.ok) {
-            const d = await creditsResponse.json();
+            const d = await readJsonWithLimit(creditsResponse);
             const total = d.data?.total_credits || 0;
             const usage = d.data?.total_usage || 0;
             return {
@@ -25,18 +63,20 @@ const balanceCheckers = {
                 rawBalanceResponse: d,
             };
         }
+        await discardResponseBody(creditsResponse);
         return BALANCE_UNAVAILABLE;
     },
     async checkSiliconFlowBalance(token, baseUrl, region, env) {
         const resp = await secureProxiedFetch(normalizeBaseUrl(baseUrl).replace("/v1", "") + "/v1/user/info", { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env, 10000);
         if (resp.ok) {
-            const d = await resp.json();
+            const d = await readJsonWithLimit(resp);
             const bal = parseFloat(d.data?.balance);
             return {
                 balance: isNaN(bal) ? -1 : parseFloat(bal.toFixed(4)),
                 rawBalanceResponse: d,
             };
         }
+        await discardResponseBody(resp);
         return BALANCE_UNAVAILABLE;
     },
     async checkDeepSeekBalance(token, baseUrl, region, env) {
@@ -46,7 +86,7 @@ const balanceCheckers = {
             region, env, 10000
         );
         if (resp.ok) {
-            const d = await resp.json();
+            const d = await readJsonWithLimit(resp);
             const info = d.balance_infos?.find((b) => b.currency === "USD") || d.balance_infos?.find((b) => b.currency === "CNY") || d.balance_infos?.[0];
             if (info) {
                 return {
@@ -58,17 +98,20 @@ const balanceCheckers = {
                 };
             }
         }
+        await discardResponseBody(resp);
         return BALANCE_UNAVAILABLE;
     },
     async checkMoonshotBalance(token, baseUrl, region, env) {
         const balanceResponse = await secureProxiedFetch(normalizeBaseUrl(baseUrl) + "/users/me/balance", { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env, 10000);
         if (balanceResponse.ok) {
-            const data = await balanceResponse.json();
+            const data = await readJsonWithLimit(balanceResponse);
+            const balance = Number.parseFloat(data.data?.available_balance);
             return {
-                balance: parseFloat(data.data?.available_balance) || -1,
+                balance: Number.isFinite(balance) ? balance : -1,
                 rawBalanceResponse: data,
             };
         }
+        await discardResponseBody(balanceResponse);
         return BALANCE_UNAVAILABLE;
     },
     async checkNewAPIBalance(token, baseUrl, region, env) {
@@ -79,7 +122,7 @@ const balanceCheckers = {
             region, env, 10000
         );
         if (response.ok) {
-            const d = await response.json();
+            const d = await readJsonWithLimit(response);
             if (d.code === true && d.data) {
                 const tokenToUsdRate = 500000;
                 const availableUsd = parseFloat((d.data.total_available / tokenToUsdRate).toFixed(2));
@@ -93,6 +136,7 @@ const balanceCheckers = {
                 };
             }
         }
+        await discardResponseBody(response);
         return BALANCE_UNAVAILABLE;
     },
 };
@@ -103,7 +147,7 @@ const balanceCheckers = {
  * @returns {Promise<{message: string, rawError: object, errorCategory: string}>} - 包含格式化消息、原始错误和错误分类的对象。
  */
 async function handleApiError(response) {
-    const rawText = await response.text();
+    const rawText = await readTextWithLimit(response);
     let rawErrorContent;
     try {
         rawErrorContent = JSON.parse(rawText);
@@ -202,19 +246,31 @@ async function _checkTokenTemplate(token, providerMeta, providerConfig, env, str
             const contentType = response.headers.get('content-type') || '';
 
             if (enableStream || contentType.includes('text/event-stream')) {
+                if (!response.body) {
+                    return { token, isValid: false, message: "验证失败", errorCategory: 'unknown', error: true };
+                }
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let hasValidEvent = false;
+                let streamPreview = '';
 
                 try {
-                    // 读取前几个 chunk 验证流式响应有效性
-                    for (let i = 0; i < 3; i++) {
+                    const maxPreviewBytes = 64 * 1024;
+                    let previewBytes = 0;
+                    // 网络 chunk 没有语义边界；在总请求超时内读取至字节上限。
+                    while (previewBytes < maxPreviewBytes) {
                         const { done, value } = await reader.read();
                         if (done) break;
 
-                        const chunk = decoder.decode(value, { stream: true });
+                        const remainingBytes = maxPreviewBytes - previewBytes;
+                        const boundedValue = value.byteLength > remainingBytes
+                            ? value.subarray(0, remainingBytes)
+                            : value;
+                        previewBytes += boundedValue.byteLength;
+                        const chunk = decoder.decode(boundedValue, { stream: true });
+                        streamPreview += chunk;
                         // 检测有效的 SSE 事件（response.created, response.output_text.delta 等）
-                        if (chunk.includes('event:') || chunk.includes('data:')) {
+                        if (streamPreview.includes('event:') || streamPreview.includes('data:')) {
                             hasValidEvent = true;
                             break;
                         }
@@ -238,7 +294,7 @@ async function _checkTokenTemplate(token, providerMeta, providerConfig, env, str
                     }
                 }
             } else {
-                const text = await response.text();
+                const text = await readTextWithLimit(response);
                 try {
                     result.rawResponse = JSON.parse(text);
                 } catch {
@@ -250,8 +306,13 @@ async function _checkTokenTemplate(token, providerMeta, providerConfig, env, str
             }
 
             if (providerMeta.balanceCheck && balanceCheckers[providerMeta.balanceCheck]) {
-                const balanceResult = await balanceCheckers[providerMeta.balanceCheck](token, providerConfig.baseUrl, region, env);
-                Object.assign(result, balanceResult);
+                try {
+                    const balanceResult = await balanceCheckers[providerMeta.balanceCheck](token, providerConfig.baseUrl, region, env);
+                    Object.assign(result, balanceResult);
+                } catch (error) {
+                    console.warn(`Balance check '${providerMeta.balanceCheck}' failed:`, error);
+                    Object.assign(result, BALANCE_UNAVAILABLE);
+                }
             }
             return result;
         }
@@ -268,6 +329,9 @@ async function _checkTokenTemplate(token, providerMeta, providerConfig, env, str
         return { token, isValid: false, message: error.message, errorCategory: error.errorCategory, rawError: error.rawError, error: true };
 
     } catch (error) {
+        if (error?.name === 'AbortError') {
+            return { token, isValid: false, message: "请求超时", errorCategory: 'unknown', rawError: { status: 408, content: error.message }, error: true };
+        }
         return { token, isValid: false, message: "网络错误或未知异常", errorCategory: 'unknown', rawError: { status: 0, content: error.message }, error: true };
     }
 }
@@ -355,7 +419,8 @@ const apiStrategies = {
         buildRequest: (token, providerConfig) => {
             const { baseUrl, model, enableStream, validationPrompt, validationMaxOutputTokens } = providerConfig;
             const endpoint = enableStream ? 'streamGenerateContent' : 'generateContent';
-            const apiUrl = `${normalizeBaseUrl(baseUrl)}/v1beta/models/${model}:${endpoint}`;
+            const streamQuery = enableStream ? '?alt=sse' : '';
+            const apiUrl = `${normalizeBaseUrl(baseUrl)}/v1beta/models/${model}:${endpoint}${streamQuery}`;
             const headers = { "Content-Type": "application/json", "x-goog-api-key": token };
             const body = {
                 contents: [{ parts: [{ text: validationPrompt || "You just need to reply Hi." }] }],

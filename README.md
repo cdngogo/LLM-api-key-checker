@@ -47,7 +47,7 @@
 ## 🚀 快速开始
 
 ### 环境要求
-- Node.js 18.0 或更高版本
+- Node.js 20.10 或更高版本
 - npm 或 yarn 包管理器
 - Cloudflare 账户（用于部署）
 
@@ -66,15 +66,21 @@
 
 3. **配置环境**
    
-   复制并编辑配置文件：
+   编辑仓库中的 `wrangler.toml`：
    ```bash
-   cp wrangler.toml.example wrangler.toml
+   $EDITOR wrangler.toml
    ```
    
    在 `wrangler.toml` 中配置以下变量：
    ```toml
    [vars]
-   ALLOWED_ORIGINS = "[\"https://your-domain.com\"]"
+   # 同源部署保持空数组；仅在前端与 Worker 分离部署时添加精确来源
+   ALLOWED_ORIGINS = "[]"
+   # 每个客户端 IP 每小时最多检测 60,000 个 Token，可按部署容量调整
+   MAX_TOKENS_PER_IP_PER_WINDOW = "60000"
+   TOKEN_RATE_WINDOW_MS = "3600000"
+   MAX_MODELS_REQUESTS_PER_IP_PER_WINDOW = "30"
+   MODELS_RATE_WINDOW_MS = "60000"
    ENABLE_UA_RANDOMIZATION = "true"
    ENABLE_ACCEPT_LANGUAGE_RANDOMIZATION = "true"
    ```
@@ -107,9 +113,9 @@
 ### 任务控制
 
 - **开始检测**：启动新的检测任务。
-- **暂停检测**：暂停当前正在进行的检测，任务状态会保留。
+- **暂停检测**：允许已发出的请求收尾，并暂停领取新的检测任务；任务状态会保留。
 - **继续检测**：从暂停处恢复检测任务。
-- **停止检测**：终止当前检测任务，并清空所有进度和结果。
+- **停止检测**：终止当前检测任务，并保留已经收到的结果。
 
 ### 支持的服务商
 
@@ -154,10 +160,11 @@ sk-1234567890abcdef;sk-abcdef1234567890
 
 ### 安全特性
 
-- **CORS 保护** - 严格的跨域访问控制
+- **来源保护** - WebSocket 和模型接口仅接受同源或显式白名单中的浏览器请求
 - **URL 验证** - 防止 SSRF 攻击
 - **UA 随机化** - 随机 User-Agent 避免检测
 - **请求频率控制** - 内置限流机制
+- **集中任务配额** - 使用 Durable Object 按客户端 IP 跨 Worker 实例限制检测量
 
 ## 📁 项目结构
 
@@ -188,8 +195,7 @@ llm-api-key-checker/
 │   │   └── components/
 │   │       ├── modals/
 │   │       └── ...               # 其他组件
-│   ├── dist/
-│   └── package.json              # 前端依赖
+│   └── dist/                     # 构建产物（不会提交）
 ├── wrangler.toml                 # Cloudflare 配置
 └── package.json                  # 项目依赖
 ```
@@ -206,6 +212,12 @@ llm-api-key-checker/
 2. **启动后端模拟**
    ```bash
    npx wrangler dev
+   ```
+
+3. **运行回归测试和构建检查**
+   ```bash
+   npm test
+   npm run check
    ```
 
 ### 添加新的服务商
@@ -256,7 +268,7 @@ llm-api-key-checker/
 
 - 本工具仅用于验证自己拥有的 API 密钥
 - 请勿用于非法用途或未经授权的密钥检测
-- 所有检测数据仅在当地处理，不会上传到第三方服务器
+- API Key 由浏览器发送到你部署的 Cloudflare Worker，并由 Worker 转发给所选 API 提供商完成验证；服务端不会持久化 Key
 - 建议在本地环境中使用，避免在公共场所使用
 
 ## 📄 许可证

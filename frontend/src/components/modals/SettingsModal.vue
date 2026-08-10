@@ -32,17 +32,19 @@
 
                     <div class="config-item">
                         <label for="max-tokens">max_tokens</label>
-                        <input id="max-tokens" type="number" v-model.number="configStore.validationMaxTokens" min="1">
+                        <input id="max-tokens" type="number" v-model.number="configStore.validationMaxTokens"
+                            @change="clampTokenSetting('validationMaxTokens')" min="1" max="1024">
                     </div>
                     
                     <div class="config-item">
                         <label for="max-output-tokens">max_output_tokens</label>
-                        <input id="max-output-tokens" type="number" v-model.number="configStore.validationMaxOutputTokens" min="1">
+                        <input id="max-output-tokens" type="number" v-model.number="configStore.validationMaxOutputTokens"
+                            @change="clampTokenSetting('validationMaxOutputTokens')" min="1" max="1024">
                     </div>
 
                     <div class="config-item prompt-item">
                         <label for="prompt">验证提示词 (Prompt)</label>
-                        <input id="prompt" type="text" v-model="configStore.validationPrompt">
+                        <input id="prompt" type="text" v-model="configStore.validationPrompt" maxlength="4096">
                     </div>
                 </div>
             </div>
@@ -56,6 +58,11 @@ import { useUiStore } from '@/stores/ui';
 import { useConfigStore } from '@/stores/config';
 const uiStore = useUiStore();
 const configStore = useConfigStore();
+
+const clampTokenSetting = (key) => {
+    const value = Number.parseInt(configStore[key], 10);
+    configStore[key] = Number.isFinite(value) ? Math.min(Math.max(value, 1), 1024) : 16;
+};
 
 /**
  * @description 存储 onblur 事件处理器引用，用于组件卸载时清理。

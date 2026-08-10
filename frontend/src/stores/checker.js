@@ -44,6 +44,8 @@ export const useCheckerStore = defineStore('checker', () => {
     let currentBatch = null;
     /** @type {Function|null} 当前批次完成时的 resolve 回调。*/
     let batchDoneResolve = null;
+    /** @type {Function|null} 当前批次失败时的 reject 回调。*/
+    let batchDoneReject = null;
     /** @type {Set<number>} 已完成的 order 集合，用于断线恢复时去重。*/
     let completedOrders = new Set();
 
@@ -84,8 +86,6 @@ export const useCheckerStore = defineStore('checker', () => {
     async function processNextBatch() {
         if (isPaused.value) return;
 
-        reconnectAttempts = 0;
-
         if (!jobQueue || jobQueue.remainingKeys.length === 0) {
             // 所有批次处理完毕，通知后端关闭连接
             _closeSocket('done');
@@ -106,12 +106,13 @@ export const useCheckerStore = defineStore('checker', () => {
             await _ensureConnection();
             // 发送批次并等待完成
             await _sendBatchAndWait(jobQueue.providerConfig, batch, jobQueue.concurrency);
+            reconnectAttempts = 0;
             currentBatch = null;
             // 处理下一个批次
             processNextBatch();
         } catch (err) {
             // 连接失败，尝试重连
-            if (isChecking.value && !isPaused.value) {
+            if (isChecking.value) {
                 _handleConnectionFailure();
             }
         }
@@ -134,9 +135,11 @@ export const useCheckerStore = defineStore('checker', () => {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const host = window.location.host;
             const ws = new WebSocket(`${protocol}//${host}/check`);
+            let opened = false;
+            socket.value = ws;
 
             ws.onopen = () => {
-                socket.value = ws;
+                opened = true;
                 _setupMessageHandler(ws);
                 resolve();
             };
@@ -147,8 +150,9 @@ export const useCheckerStore = defineStore('checker', () => {
 
             // 如果在连接过程中关闭
             ws.onclose = (event) => {
-                if (event.code !== 1000 && socket.value === ws) {
-                    reject(new Error('WebSocket closed during connection'));
+                if (!opened && socket.value === ws) {
+                    socket.value = null;
+                    reject(new Error(`WebSocket closed during connection (${event.code})`));
                 }
             };
         });
@@ -160,27 +164,49 @@ export const useCheckerStore = defineStore('checker', () => {
      */
     function _setupMessageHandler(ws) {
         ws.onmessage = (event) => {
-            const message = JSON.parse(event.data);
-            if (message.type === 'result') {
-                processResult(message.data);
-                if (currentBatch) {
-                    currentBatch.batch = currentBatch.batch.filter(k => k.order !== message.data.order);
+            try {
+                const message = JSON.parse(event.data);
+                if (message.type === 'result') {
+                    processResult(message.data);
+                    if (currentBatch) {
+                        currentBatch.batch = currentBatch.batch.filter(k => k.order !== message.data.order);
+                    }
+                } else if (message.type === 'batch_done') {
+                    // 批次完成，触发 resolve 让 processNextBatch 继续
+                    if (batchDoneResolve) {
+                        const resolve = batchDoneResolve;
+                        batchDoneResolve = null;
+                        batchDoneReject = null;
+                        resolve();
+                    }
+                } else if (message.type === 'error') {
+                    _postStatus(`后端错误: ${message.message}`, "error");
+                    if (batchDoneReject) {
+                        const reject = batchDoneReject;
+                        batchDoneResolve = null;
+                        batchDoneReject = null;
+                        reject(new Error(message.message));
+                    }
+                    stopCheck(false);
                 }
-            } else if (message.type === 'batch_done') {
-                // 批次完成，触发 resolve 让 processNextBatch 继续
-                if (batchDoneResolve) {
-                    batchDoneResolve();
-                    batchDoneResolve = null;
-                }
-            } else if (message.type === 'error') {
-                _postStatus(`后端错误: ${message.message}`, "error");
-                stopCheck();
+            } catch (_) {
+                _postStatus('收到无效的后端消息，任务已停止。', 'error');
+                stopCheck(false);
             }
         };
 
         ws.onclose = (event) => {
-            if (event.code !== 1000 && isChecking.value && !isPaused.value) {
-                _handleConnectionFailure();
+            if (socket.value === ws) socket.value = null;
+            // 主动关闭前会移除此处理器，因此这里出现的关闭都视为异常中断。
+            if (isChecking.value) {
+                if (batchDoneReject) {
+                    const reject = batchDoneReject;
+                    batchDoneResolve = null;
+                    batchDoneReject = null;
+                    reject(new Error(`WebSocket closed unexpectedly (${event.code})`));
+                } else {
+                    _handleConnectionFailure();
+                }
             }
         };
 
@@ -199,16 +225,28 @@ export const useCheckerStore = defineStore('checker', () => {
     function _sendBatchAndWait(providerConfig, batch, concurrency) {
         return new Promise((resolve, reject) => {
             batchDoneResolve = resolve;
+            batchDoneReject = reject;
 
             if (!socket.value || socket.value.readyState !== WebSocket.OPEN) {
+                batchDoneResolve = null;
+                batchDoneReject = null;
                 reject(new Error('WebSocket not connected'));
                 return;
             }
 
-            socket.value.send(JSON.stringify({
-                command: 'start',
-                data: { tokens: batch, providerConfig, concurrency }
-            }));
+            try {
+                socket.value.send(JSON.stringify({
+                    command: 'start',
+                    data: { tokens: batch, providerConfig, concurrency }
+                }));
+                if (isPaused.value) {
+                    socket.value.send(JSON.stringify({ command: 'pause' }));
+                }
+            } catch (error) {
+                batchDoneResolve = null;
+                batchDoneReject = null;
+                reject(error);
+            }
         });
     }
 
@@ -216,6 +254,39 @@ export const useCheckerStore = defineStore('checker', () => {
      * @description 处理连接失败，尝试重连。
      */
     function _handleConnectionFailure() {
+        if (!currentBatch && jobQueue) {
+            if (jobQueue.remainingKeys.length === 0) {
+                reconnectAttempts = 0;
+                finishCheck();
+                return;
+            }
+
+            if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                _postStatus("检测连接意外关闭，重连失败，任务已停止。", "error");
+                stopCheck(false);
+                return;
+            }
+
+            reconnectAttempts++;
+            _cleanupSocket();
+            if (isPaused.value) {
+                _postStatus('连接已断开，恢复检测后将继续重连。', 'warning');
+                return;
+            }
+
+            setTimeout(() => {
+                if (isChecking.value && !isPaused.value) processNextBatch();
+            }, 1000 * reconnectAttempts);
+            return;
+        }
+
+        if (currentBatch && currentBatch.batch.length === 0) {
+            reconnectAttempts = 0;
+            currentBatch = null;
+            if (!isPaused.value) processNextBatch();
+            return;
+        }
+
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && currentBatch && currentBatch.batch.length > 0) {
             reconnectAttempts++;
             _postStatus(`连接断开，正在重试 (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`, "warning");
@@ -230,6 +301,11 @@ export const useCheckerStore = defineStore('checker', () => {
             }
             currentBatch = null;
 
+            if (isPaused.value) {
+                _postStatus('连接已断开，恢复检测后将继续重连。', 'warning');
+                return;
+            }
+
             setTimeout(() => {
                 if (isChecking.value && !isPaused.value) {
                     processNextBatch();
@@ -237,7 +313,7 @@ export const useCheckerStore = defineStore('checker', () => {
             }, 1000 * reconnectAttempts);
         } else {
             _postStatus("检测连接意外关闭，重连失败，任务已停止。", "error");
-            stopCheck();
+            stopCheck(false);
         }
     }
 
@@ -246,13 +322,18 @@ export const useCheckerStore = defineStore('checker', () => {
      */
     function _cleanupSocket() {
         if (socket.value) {
-            socket.value.onopen = null;
-            socket.value.onmessage = null;
-            socket.value.onclose = null;
-            socket.value.onerror = null;
+            const ws = socket.value;
+            ws.onopen = null;
+            ws.onmessage = null;
+            ws.onclose = null;
+            ws.onerror = null;
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                try { ws.close(1000, 'Client cleanup'); } catch (_) {}
+            }
             socket.value = null;
         }
         batchDoneResolve = null;
+        batchDoneReject = null;
     }
 
     /**
@@ -316,6 +397,8 @@ export const useCheckerStore = defineStore('checker', () => {
      */
     function processResult(res) {
         if (!res) return;
+
+        if (completedOrders.has(res.order)) return;
 
         // 记录已完成的 order，用于断线恢复去重
         completedOrders.add(res.order);
@@ -399,6 +482,7 @@ export const useCheckerStore = defineStore('checker', () => {
         // 清理旧任务和去重集合
         jobQueue = null;
         completedOrders.clear();
+        reconnectAttempts = 0;
         resultsStore.clearResults();
         completedCount.value = 0;
 
@@ -467,7 +551,7 @@ export const useCheckerStore = defineStore('checker', () => {
     /**
      * @description 停止当前检测任务，清理会话状态。
      */
-    function stopCheck() {
+    function stopCheck(showStatus = true) {
         flushResultBuffer();
 
         isChecking.value = false;
@@ -476,7 +560,9 @@ export const useCheckerStore = defineStore('checker', () => {
         currentBatch = null;
         completedOrders.clear();
         _closeSocket('stop');
-        _postStatus("检测已手动停止", "info");
+        if (showStatus !== false) {
+            _postStatus("检测已手动停止", "info");
+        }
     }
 
     /**
@@ -489,13 +575,11 @@ export const useCheckerStore = defineStore('checker', () => {
         flushResultBuffer();
         isPaused.value = true;
 
-        // 将当前未完成的批次放回队列头部
-        if (currentBatch && currentBatch.batch.length > 0 && jobQueue) {
-            jobQueue.remainingKeys = [...currentBatch.batch, ...jobQueue.remainingKeys];
+        if (socket.value && socket.value.readyState === WebSocket.OPEN && currentBatch) {
+            try { socket.value.send(JSON.stringify({ command: 'pause' })); } catch (_) {}
         }
 
         _postStatus("检测已暂停", "info");
-        currentBatch = null;
     }
 
     /**
@@ -506,6 +590,18 @@ export const useCheckerStore = defineStore('checker', () => {
 
         isPaused.value = false;
         _postStatus("检测已恢复", "info");
+
+        if (currentBatch) {
+            if (socket.value && socket.value.readyState === WebSocket.OPEN) {
+                try {
+                    socket.value.send(JSON.stringify({ command: 'resume' }));
+                } catch (_) {
+                    // 原批次循环或连接失败处理器会继续恢复任务。
+                }
+            }
+            // currentBatch 存在时已有一个批次循环正在建立连接或等待结果，不可重复调度。
+            return;
+        }
 
         processNextBatch();
     }

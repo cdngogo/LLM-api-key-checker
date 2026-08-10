@@ -1,8 +1,119 @@
 import { corsHeaders, handleOptions } from './utils/cors.js';
 import { handleWebSocketSession } from './websocket_handler.js';
 import * as modelFetcher from './model_fetchers.js';
-import * as providersData from '../config/providers.json';
+import providersData from '../config/providers.json' with { type: 'json' };
+import regionsData from '../config/regions.json' with { type: 'json' };
 import { checkRateLimit } from './utils/rateLimit.js';
+import { getAllowedOrigins, validateOrigin, validateTargetUrl } from './utils/security.js';
+
+const PROVIDERS = providersData;
+const REGIONS = regionsData;
+const MAX_TOKEN_LENGTH = 8192;
+const MAX_BASE_URL_LENGTH = 2048;
+const MAX_MODELS_REQUEST_BYTES = 64 * 1024;
+const DEFAULT_MAX_MODELS_REQUESTS_PER_WINDOW = 30;
+const DEFAULT_MODELS_RATE_WINDOW_MS = 60_000;
+
+async function readRequestJsonWithLimit(request, maxBytes) {
+    const declaredLength = Number.parseInt(request.headers.get('Content-Length') || '', 10);
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+        throw Object.assign(new Error('Request body is too large'), { status: 413 });
+    }
+    if (!request.body) throw new Error('Request body is required');
+
+    const reader = request.body.getReader();
+    const decoder = new TextDecoder();
+    let totalBytes = 0;
+    let text = '';
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalBytes += value.byteLength;
+            if (totalBytes > maxBytes) {
+                try { await reader.cancel('Request body is too large'); } catch (_) {}
+                throw Object.assign(new Error('Request body is too large'), { status: 413 });
+            }
+            text += decoder.decode(value, { stream: true });
+        }
+        text += decoder.decode();
+        return JSON.parse(text);
+    } finally {
+        try { reader.releaseLock(); } catch (_) {}
+    }
+}
+
+/**
+ * @description 使用 Durable Object 为单个客户端 IP 提供跨 isolate 的 Token 配额。
+ */
+export class RequestRateLimiter {
+    constructor(state, env) {
+        this.state = state;
+        this.env = env;
+    }
+
+    async fetch(request) {
+        if (request.method !== 'POST') {
+            return new Response('Method Not Allowed', { status: 405 });
+        }
+
+        let payload;
+        try {
+            payload = await request.json();
+        } catch (_) {
+            return new Response('Invalid request', { status: 400 });
+        }
+
+        const { amount, maxTokens, windowMs } = payload;
+        if (
+            !Number.isSafeInteger(amount) || amount < 1 ||
+            !Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 1_000_000 ||
+            !Number.isSafeInteger(windowMs) || windowMs < 60_000 || windowMs > 86_400_000
+        ) {
+            return new Response('Invalid request', { status: 400 });
+        }
+
+        const now = Date.now();
+        let result;
+        await this.state.storage.transaction(async transaction => {
+            const stored = await transaction.get('token-window');
+            const bucket = !stored || now >= stored.resetAt
+                ? { count: 0, resetAt: now + windowMs }
+                : stored;
+
+            if (bucket.count + amount > maxTokens) {
+                result = {
+                    allowed: false,
+                    retryAfterMs: Math.max(bucket.resetAt - now, 1),
+                    resetAt: bucket.resetAt,
+                };
+                return;
+            }
+
+            bucket.count += amount;
+            await transaction.put('token-window', bucket);
+            result = {
+                allowed: true,
+                remaining: maxTokens - bucket.count,
+                retryAfterMs: 0,
+                resetAt: bucket.resetAt,
+            };
+        });
+
+        if (result.allowed) {
+            await this.state.storage.setAlarm(result.resetAt);
+        }
+
+        return new Response(JSON.stringify(result), {
+            status: result.allowed ? 200 : 429,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    async alarm() {
+        await this.state.storage.deleteAll();
+    }
+}
 
 /**
  * @description 速率限制配置。
@@ -26,13 +137,40 @@ export class RegionalFetcher {
 
     async fetch(request) {
         const { targetUrl, method, headers, body } = await request.json();
+        if (!['GET', 'POST'].includes(method) || !validateTargetUrl(targetUrl)) {
+            return new Response('Invalid or forbidden target URL', { status: 400 });
+        }
         const upstreamRequest = new Request(targetUrl, {
             method,
             headers,
-            body: typeof body === 'object' ? JSON.stringify(body) : body
+            body: typeof body === 'object' ? JSON.stringify(body) : body,
+            redirect: 'manual',
+            signal: request.signal,
         });
         return fetch(upstreamRequest);
     }
+}
+
+/**
+ * @description 敏感接口只接受同源请求或显式白名单中的跨源请求。
+ */
+function isRequestOriginAllowed(request, env) {
+    const origin = request.headers.get('Origin');
+    if (!origin) return false;
+
+    const requestOrigin = new URL(request.url).origin;
+    if (origin === requestOrigin) return true;
+
+    return validateOrigin(origin, getAllowedOrigins(env)) !== null;
+}
+
+function originDeniedResponse(request, env) {
+    const headers = corsHeaders(request, env);
+    headers['Content-Type'] = 'application/json';
+    return new Response(JSON.stringify({ error: 'Origin is not allowed' }), {
+        status: 403,
+        headers,
+    });
 }
 
 /**
@@ -48,17 +186,32 @@ async function handleModelsRequest(request, env) {
 
     let requestBody;
     try {
-        requestBody = await request.json();
+        requestBody = await readRequestJsonWithLimit(request, MAX_MODELS_REQUEST_BYTES);
     } catch (e) {
-        return new Response('Invalid JSON in request body', { status: 400 });
+        return new Response(
+            e?.status === 413 ? 'Request body is too large' : 'Invalid JSON in request body',
+            { status: e?.status === 413 ? 413 : 400 },
+        );
     }
 
     const { token, providerConfig } = requestBody;
-    if (!token || !providerConfig) {
+    if (
+        typeof token !== 'string' ||
+        token.length === 0 ||
+        token.length > MAX_TOKEN_LENGTH ||
+        !providerConfig ||
+        typeof providerConfig !== 'object' ||
+        typeof providerConfig.provider !== 'string' ||
+        typeof providerConfig.baseUrl !== 'string' ||
+        providerConfig.baseUrl.length === 0 ||
+        providerConfig.baseUrl.length > MAX_BASE_URL_LENGTH ||
+        !validateTargetUrl(providerConfig.baseUrl) ||
+        (providerConfig.region && !Object.hasOwn(REGIONS, providerConfig.region))
+    ) {
         return new Response('Invalid request body', { status: 400 });
     }
 
-    const providerMeta = providersData.default[providerConfig.provider];
+    const providerMeta = PROVIDERS[providerConfig.provider];
     if (!providerMeta) {
         return new Response(`Provider '${providerConfig.provider}' not found`, { status: 400 });
     }
@@ -104,6 +257,58 @@ function rateLimitResponse(retryAfterMs, request, env) {
     });
 }
 
+function serviceUnavailableResponse(request, env) {
+    const headers = corsHeaders(request, env);
+    headers['Retry-After'] = '5';
+    headers['Content-Type'] = 'application/json';
+    return new Response(JSON.stringify({ error: 'Rate limit service is temporarily unavailable.' }), {
+        status: 503,
+        headers,
+    });
+}
+
+async function consumeModelsQuota(env, clientIP) {
+    if (!env.REQUEST_RATE_LIMITER) {
+        return { allowed: true, retryAfterMs: 0 };
+    }
+
+    const configuredMax = Number.parseInt(env.MAX_MODELS_REQUESTS_PER_IP_PER_WINDOW, 10);
+    const configuredWindow = Number.parseInt(env.MODELS_RATE_WINDOW_MS, 10);
+    const maxTokens = Number.isSafeInteger(configuredMax) && configuredMax > 0 && configuredMax <= 1_000_000
+        ? configuredMax
+        : DEFAULT_MAX_MODELS_REQUESTS_PER_WINDOW;
+    const windowMs = Number.isSafeInteger(configuredWindow) && configuredWindow >= 60_000 && configuredWindow <= 86_400_000
+        ? configuredWindow
+        : DEFAULT_MODELS_RATE_WINDOW_MS;
+
+    try {
+        const id = env.REQUEST_RATE_LIMITER.idFromName(`models:${clientIP}`);
+        const stub = env.REQUEST_RATE_LIMITER.get(id);
+        const response = await stub.fetch(new Request('http://rate-limiter.internal/consume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: 1, maxTokens, windowMs }),
+        }));
+        if (response.status === 429) {
+            const result = await response.json();
+            return {
+                allowed: false,
+                rateLimited: true,
+                retryAfterMs: result.retryAfterMs || windowMs,
+            };
+        }
+        if (!response.ok) {
+            throw new Error(`Rate limiter returned HTTP ${response.status}`);
+        }
+        const result = await response.json();
+        if (result?.allowed !== true) throw new Error('Rate limiter returned an invalid response');
+        return result;
+    } catch (error) {
+        console.error('Central models rate limiter failed:', error);
+        return { allowed: false, serviceUnavailable: true };
+    }
+}
+
 /**
  * @description Cloudflare Worker 的主入口点。
  * 它处理所有传入的 HTTP 请求，并根据路径路由到不同的处理器。
@@ -120,8 +325,12 @@ export default {
 
         // /check 路径用于 WebSocket 连接，处理实时检测任务
         if (pathname === '/check') {
+            if (!isRequestOriginAllowed(request, env)) {
+                return originDeniedResponse(request, env);
+            }
+
             const upgradeHeader = request.headers.get('Upgrade');
-            if (upgradeHeader !== 'websocket') {
+            if (upgradeHeader?.toLowerCase() !== 'websocket') {
                 return new Response('Expected a WebSocket upgrade request', { status: 426 });
             }
 
@@ -135,7 +344,7 @@ export default {
             const [client, server] = Object.values(new WebSocketPair());
             
             // 将 WebSocket 会话处理委托给 handler，并确保 Worker 在会话期间保持活动状态
-            ctx.waitUntil(handleWebSocketSession(server, env));
+            ctx.waitUntil(handleWebSocketSession(server, env, clientIP));
 
             const responseHeaders = corsHeaders(request, env);
 
@@ -149,11 +358,23 @@ export default {
 
         // /models 路径用于获取模型列表
         if (pathname === '/models') {
+            if (!isRequestOriginAllowed(request, env)) {
+                return originDeniedResponse(request, env);
+            }
+
             // /models 接口速率限制
             const clientIP = getClientIP(request);
             const modelsLimit = checkRateLimit(`models:${clientIP}`, RATE_LIMITS.MODELS.maxRequests, RATE_LIMITS.MODELS.windowMs);
             if (!modelsLimit.allowed) {
                 return rateLimitResponse(modelsLimit.retryAfterMs, request, env);
+            }
+
+            const centralModelsLimit = await consumeModelsQuota(env, clientIP);
+            if (centralModelsLimit.serviceUnavailable) {
+                return serviceUnavailableResponse(request, env);
+            }
+            if (!centralModelsLimit.allowed) {
+                return rateLimitResponse(centralModelsLimit.retryAfterMs, request, env);
             }
             return handleModelsRequest(request, env);
         }

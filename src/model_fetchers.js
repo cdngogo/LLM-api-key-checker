@@ -1,8 +1,55 @@
 import { secureProxiedFetch } from './utils/fetcher.js';
 import { normalizeBaseUrl } from './utils/url.js';
-import * as providersData from '../config/providers.json';
+import providersData from '../config/providers.json' with { type: 'json' };
 
-const PROVIDERS = providersData.default;
+const PROVIDERS = providersData;
+const MAX_MODEL_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_MODEL_TOTAL_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_MODEL_TOTAL_TIME_MS = 120_000;
+const MAX_MODEL_PAGES = 20;
+const MAX_MODELS = 10000;
+const MAX_PAGE_TOKEN_LENGTH = 4096;
+
+async function readTextWithLimit(response, maxBytes = MAX_MODEL_RESPONSE_BYTES, totalBudget = null) {
+    if (!response.body) return '';
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let totalBytes = 0;
+    let text = '';
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalBytes += value.byteLength;
+            if (totalBudget) totalBudget.usedBytes += value.byteLength;
+            if (totalBytes > maxBytes || (totalBudget && totalBudget.usedBytes > totalBudget.maxBytes)) {
+                try { await reader.cancel('Model response is too large'); } catch (_) {}
+                if (totalBudget && totalBudget.usedBytes > totalBudget.maxBytes) {
+                    throw new Error(`Model pagination exceeds total response limit (${totalBudget.maxBytes} bytes)`);
+                }
+                throw new Error(`Model response exceeds ${maxBytes} bytes`);
+            }
+            text += decoder.decode(value, { stream: true });
+        }
+        text += decoder.decode();
+        return text;
+    } finally {
+        try { reader.releaseLock(); } catch (_) {}
+    }
+}
+
+async function readJsonWithLimit(response, totalBudget = null) {
+    const text = await readTextWithLimit(response, MAX_MODEL_RESPONSE_BYTES, totalBudget);
+    return JSON.parse(text);
+}
+
+function normalizeModelIds(models) {
+    if (!Array.isArray(models)) return [];
+    const ids = models.map(model => model?.id).filter(id => typeof id === 'string' && id.length > 0);
+    if (ids.length > MAX_MODELS) throw new Error(`Model count exceeds limit (${MAX_MODELS})`);
+    return ids;
+}
 
 /**
  * @description 从 OpenAI 兼容 API 获取模型列表。
@@ -15,10 +62,10 @@ const PROVIDERS = providersData.default;
 async function fetchOpenAIModels(token, baseUrl, region, env) {
     const apiUrl = normalizeBaseUrl(baseUrl) + "/models";
     const response = await secureProxiedFetch(apiUrl, { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env);
-    if (!response.ok) throw new Error("HTTP " + response.status + ": " + (await response.text()));
-    const data = await response.json();
-    if (Array.isArray(data)) return data.map((m) => m.id);
-    if (data && Array.isArray(data.data)) return data.data.map((m) => m.id);
+    if (!response.ok) throw new Error("HTTP " + response.status + ": " + (await readTextWithLimit(response)));
+    const data = await readJsonWithLimit(response);
+    if (Array.isArray(data)) return normalizeModelIds(data);
+    if (data && Array.isArray(data.data)) return normalizeModelIds(data.data);
     return [];
 }
 
@@ -39,10 +86,10 @@ async function fetchGitHubModels(token, baseUrl, region, env) {
     }
     const apiUrl = normalizeBaseUrl(baseUrl || PROVIDERS.github.defaultBase).replace("/inference", "") + "/catalog/models";
     const response = await secureProxiedFetch(apiUrl, { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env);
-    if (!response.ok) throw new Error("Fallback /catalog/models failed with HTTP " + response.status + ": " + (await response.text()));
-    const data = await response.json();
-    if (data && Array.isArray(data.data) && data.data.length > 0) return data.data.map((m) => m.id);
-    if (Array.isArray(data) && data.length > 0) return data.map((m) => m.id);
+    if (!response.ok) throw new Error("Fallback /catalog/models failed with HTTP " + response.status + ": " + (await readTextWithLimit(response)));
+    const data = await readJsonWithLimit(response);
+    if (data && Array.isArray(data.data) && data.data.length > 0) return normalizeModelIds(data.data);
+    if (Array.isArray(data) && data.length > 0) return normalizeModelIds(data);
     throw new Error("Fallback /catalog/models returned no models.");
 }
 
@@ -57,37 +104,66 @@ async function fetchGitHubModels(token, baseUrl, region, env) {
 async function fetchGoogleModels(token, baseUrl, region, env) {
     const allModels = [];
     let pageToken = null;
+    let pageCount = 0;
+    const seenPageTokens = new Set();
+    const totalBudget = { usedBytes: 0, maxBytes: MAX_MODEL_TOTAL_RESPONSE_BYTES };
+    const deadline = Date.now() + MAX_MODEL_TOTAL_TIME_MS;
 
-    do {
-        const apiUrl = `${normalizeBaseUrl(baseUrl)}/v1beta/models${pageToken ? `?pageToken=${pageToken}` : ''}`;
+    while (true) {
+        pageCount++;
+        if (pageCount > MAX_MODEL_PAGES) {
+            throw new Error(`Model pagination exceeds limit (${MAX_MODEL_PAGES} pages)`);
+        }
+        const remainingTimeMs = deadline - Date.now();
+        if (remainingTimeMs <= 0) {
+            throw new Error(`Model pagination exceeds total time limit (${MAX_MODEL_TOTAL_TIME_MS} ms)`);
+        }
+
+        const apiUrl = new URL(`${normalizeBaseUrl(baseUrl)}/v1beta/models`);
+        if (pageToken) apiUrl.searchParams.set('pageToken', pageToken);
         const response = await secureProxiedFetch(
-            apiUrl,
+            apiUrl.href,
             {
                 method: "GET",
                 headers: { "x-goog-api-key": token }
             },
             region,
-            env
+            env,
+            Math.min(30_000, remainingTimeMs),
         );
 
         if (!response.ok) {
-            const err = await response.json().catch(() => null);
+            const err = await readJsonWithLimit(response, totalBudget).catch(() => null);
             throw new Error(err?.error?.message || `HTTP ${response.status}`);
         }
 
-        const data = await response.json();
-        const models = data.models || [];
+        const data = await readJsonWithLimit(response, totalBudget);
+        const models = Array.isArray(data.models) ? data.models : [];
 
         // 过滤支持 generateContent 且非 embedding 模型
         const validModels = models
-            .filter((m) => m.supportedGenerationMethods?.includes("generateContent") && !m.name.includes("embedding"))
+            .filter((m) =>
+                typeof m?.name === 'string' &&
+                m.supportedGenerationMethods?.includes("generateContent") &&
+                !m.name.includes("embedding")
+            )
             .map((m) => m.name.replace("models/", ""));
 
         allModels.push(...validModels);
+        if (allModels.length > MAX_MODELS) {
+            throw new Error(`Model count exceeds limit (${MAX_MODELS})`);
+        }
 
-        // 检查是否有下一页
-        pageToken = data.nextPageToken || null;
-    } while (pageToken);
+        const nextPageToken = data.nextPageToken;
+        if (!nextPageToken) break;
+        if (typeof nextPageToken !== 'string') throw new Error('Invalid model page token');
+        if (nextPageToken.length > MAX_PAGE_TOKEN_LENGTH) {
+            throw new Error(`Model page token exceeds limit (${MAX_PAGE_TOKEN_LENGTH} characters)`);
+        }
+        if (seenPageTokens.has(nextPageToken)) throw new Error('Repeated model page token');
+        seenPageTokens.add(nextPageToken);
+        pageToken = nextPageToken;
+    }
 
     return allModels;
 }
@@ -107,11 +183,11 @@ async function fetchAnthropicModels(token, baseUrl, region, env) {
         headers: { "x-api-key": token, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
     }, region, env);
     if (!response.ok) {
-        const err = await response.json().catch(() => null);
+        const err = await readJsonWithLimit(response).catch(() => null);
         throw new Error(err?.error?.message || `HTTP ${response.status}`);
     }
-    const data = await response.json();
-    return data.data.map((model) => model.id);
+    const data = await readJsonWithLimit(response);
+    return normalizeModelIds(data.data);
 }
 
 /**

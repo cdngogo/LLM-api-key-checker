@@ -25,15 +25,29 @@ directory = "./frontend/dist"
 name = "REGIONAL_FETCHER" # 绑定名称，在 Worker 代码中通过 env.REGIONAL_FETCHER 访问
 class_name = "RegionalFetcher" # 对应的 Durable Object 类名
 
+[[durable_objects.bindings]]
+name = "REQUEST_RATE_LIMITER"
+class_name = "RequestRateLimiter"
+
 # 数据库迁移配置，用于 Durable Object 的存储
 [[migrations]]
 tag = "v1" # 迁移标签
 new_sqlite_classes = ["RegionalFetcher"] # 声明新的 Durable Object 类，需要 SQLite 存储
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RequestRateLimiter"]
+
 # 环境变量配置
 [vars]
-# 允许的 CORS 来源白名单，多个来源用逗号分隔的 JSON 字符串数组表示
-ALLOWED_ORIGINS = '["https://*.workers.dev"]'
+# 额外允许的跨源前端白名单；同源前端无需配置。不要使用公共托管域的宽泛通配符。
+ALLOWED_ORIGINS = '[]'
+# 单个客户端 IP 在时间窗口内最多允许检测的 Token 数量（默认一小时 60,000 个）。
+MAX_TOKENS_PER_IP_PER_WINDOW = "60000"
+TOKEN_RATE_WINDOW_MS = "3600000"
+# 模型列表接口使用独立的集中限流桶。
+MAX_MODELS_REQUESTS_PER_IP_PER_WINDOW = "30"
+MODELS_RATE_WINDOW_MS = "60000"
 # 是否启用 User-Agent 随机化，用于模拟不同客户端，默认为 "true"
 ENABLE_UA_RANDOMIZATION = "true"
 # 是否启用 Accept-Language 随机化，用于模拟不同语言偏好，默认为 "true"

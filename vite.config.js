@@ -2,6 +2,14 @@ import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 
+const workerTarget = 'http://127.0.0.1:8787';
+
+function configureWorkerProxy(proxy) {
+    const rewriteOrigin = (proxyRequest) => proxyRequest.setHeader('Origin', workerTarget);
+    proxy.on('proxyReq', rewriteOrigin);
+    proxy.on('proxyReqWs', rewriteOrigin);
+}
+
 /**
  * @description Vite 配置文件。
  * @see https://vitejs.dev/config/
@@ -22,12 +30,19 @@ export default defineConfig({
     },
     // 开发服务器配置
     server: {
-        // 配置代理，将 ' /proxy' 请求转发到本地运行的 Cloudflare Worker
+        // 将前端实际使用的 HTTP 与 WebSocket 路径转发到本地 Wrangler。
         proxy: {
-            '/proxy': {
-                target: 'http://127.0.0.1:8787', // 默认的 wrangler dev 端口
-                changeOrigin: true, // 改变源，以匹配目标 URL
-            }
+            '/models': {
+                target: workerTarget,
+                changeOrigin: true,
+                configure: configureWorkerProxy,
+            },
+            '/check': {
+                target: workerTarget,
+                changeOrigin: true,
+                ws: true,
+                configure: configureWorkerProxy,
+            },
         }
     }
 });

@@ -4,13 +4,13 @@
             <div class="config-item">
                 <label :for="configStore.currentProvider + '__base'">Base URL</label>
                 <input type="text" :id="configStore.currentProvider + '__base'" v-model="currentConfig.baseUrl"
-                    placeholder="API Base URL" :disabled="checkerStore.isChecking">
+                    placeholder="API Base URL" maxlength="2048" :disabled="checkerStore.isChecking">
             </div>
             <div class="config-item">
                 <label :for="configStore.currentProvider + '__model'">测试模型</label>
                 <div class="input-with-button">
                     <input type="text" :id="configStore.currentProvider + '__model'" v-model="currentConfig.model"
-                        placeholder="测试用的模型名称" :disabled="checkerStore.isChecking">
+                        placeholder="测试用的模型名称" maxlength="512" :disabled="checkerStore.isChecking">
                     <button type="button" class="fetch-models-btn" @click="handleFetchModels"
                         :disabled="uiStore.isFetchingModels || checkerStore.isChecking">
                         <span v-if="!uiStore.isFetchingModels">获取</span>
