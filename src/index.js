@@ -1,7 +1,7 @@
 import { corsHeaders, handleOptions } from './utils/cors.js';
 import { handleWebSocketSession } from './websocket_handler.js';
 import * as modelFetcher from './model_fetchers.js';
-import providersData from '../config/providers.json' with { type: 'json' };
+import providersData from '../config/providers.js';
 import regionsData from '../config/regions.json' with { type: 'json' };
 import { checkRateLimit } from './utils/rateLimit.js';
 import { getAllowedOrigins, validateOrigin, validateTargetUrl } from './utils/security.js';

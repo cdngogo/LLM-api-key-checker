@@ -1,7 +1,7 @@
 import { secureProxiedFetch } from './utils/fetcher.js';
 import { normalizeBaseUrl } from './utils/url.js';
 import { readBodyJsonWithLimit, readBodyTextWithLimit } from './utils/body.js';
-import providersData from '../config/providers.json' with { type: 'json' };
+import providersData from '../config/providers.js';
 
 const PROVIDERS = providersData;
 const MAX_MODEL_RESPONSE_BYTES = 2 * 1024 * 1024;

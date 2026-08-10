@@ -1,13 +1,18 @@
 import regionsData from '../../config/regions.json';
-import providersData from '../../config/providers.json';
+import providersData, {
+    PRIMARY_PROVIDERS as primaryProvidersData,
+    ADDITIONAL_PROVIDERS as additionalProvidersData,
+} from '../../config/providers.js';
 
 /**
  * @description 区域数据，从配置文件加载。
  */
 export const REGIONS = regionsData;
 /**
- * @description 提供商数据，从配置文件加载。
+ * @description 一级、更多预置及合并后的全部提供商数据。
  */
+export const PRIMARY_PROVIDERS = primaryProvidersData;
+export const ADDITIONAL_PROVIDERS = additionalProvidersData;
 export const PROVIDERS = providersData;
 
 /**

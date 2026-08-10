@@ -248,7 +248,7 @@ llm-api-key-checker/
 
 1. 在 `src/checkers.js` 中添加新的检查器策略
 2. 在 `src/model_fetchers.js` 中添加模型获取逻辑
-3. 在 `config/providers.json` 中更新服务商配置
+3. 在 `config/primary-providers.json`（一级提供商）或 `config/additional-providers.json`（更多预置）中更新服务商配置
 
 ### 自定义样式
 

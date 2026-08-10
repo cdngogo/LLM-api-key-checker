@@ -78,13 +78,13 @@ const uiStore = useUiStore();
 const resultsStore = useResultsStore();
 const checkerStore = useCheckerStore();
 
-const primaryProviders = [
-    { key: 'openai', name: 'OpenAI', protocol: 'Completions', ariaLabel: 'OpenAI Completions' },
-    { key: 'openai_responses', name: 'OpenAI', protocol: 'Responses', ariaLabel: 'OpenAI Responses' },
-    { key: 'anthropic', name: 'Anthropic', protocol: 'Messages', ariaLabel: 'Anthropic Messages' },
-    { key: 'gemini', name: 'Gemini', protocol: 'Contents', ariaLabel: 'Gemini Contents' },
-];
-const primaryProviderKeys = new Set(primaryProviders.map(provider => provider.key));
+const primaryProviders = computed(() => Object.entries(configStore.primaryProviders).map(([key, provider]) => ({
+    key,
+    name: provider.selector.label,
+    protocol: provider.selector.detail,
+    ariaLabel: `${provider.selector.label} ${provider.selector.detail}`,
+})));
+const primaryProviderKeys = computed(() => new Set(Object.keys(configStore.primaryProviders)));
 
 const providerSelectWrapper = ref(null);
 const providerSearchTerm = ref('');
@@ -94,13 +94,13 @@ const highlightedIndex = ref(-1);
 
 const currentConfig = computed(() => configStore.getCurrentProviderConfig());
 const selectedAdditionalProvider = computed(() => {
-    if (primaryProviderKeys.has(configStore.currentProvider)) return null;
-    return configStore.providers[configStore.currentProvider] || null;
+    if (primaryProviderKeys.value.has(configStore.currentProvider)) return null;
+    return configStore.additionalProviders[configStore.currentProvider] || null;
 });
 
 const filteredAdditionalProviders = computed(() => {
     const searchTerm = providerSearchTerm.value.trim().toLowerCase();
-    const entries = Object.entries(configStore.providers).filter(([key]) => !primaryProviderKeys.has(key));
+    const entries = Object.entries(configStore.additionalProviders);
     if (!searchTerm) return entries;
     return entries.filter(([key, provider]) =>
         key.toLowerCase().includes(searchTerm) || provider.label.toLowerCase().includes(searchTerm)

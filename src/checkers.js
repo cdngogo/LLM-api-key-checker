@@ -215,7 +215,7 @@ async function handleApiError(response) {
 /**
  * @description 通用的 API Key 检测模板函数，封装了请求、响应、错误处理和重试的通用逻辑。
  * @param {string} token - 要检测的 API Key。
- * @param {object} providerMeta - 提供商的元数据，来自 providers.json。
+ * @param {object} providerMeta - 提供商的元数据，来自提供商配置。
  * @param {object} providerConfig - 用户配置的提供商信息。
  * @param {object} env - Cloudflare Worker 的环境变量。
  * @param {object} strategy - 定义了如何构建请求和处理失败的策略对象。
@@ -455,7 +455,7 @@ async function checkTavilyToken(token, providerMeta, providerConfig, env) {
  * @description 检测单个 API Key 的有效性、额度等信息。
  * 这是暴露给外部（如 websocket_handler）的主要函数。
  * @param {string} token - 要检测的 API Key。
- * @param {object} providerMeta - 提供商的元数据，来自 providers.json。
+ * @param {object} providerMeta - 提供商的元数据，来自提供商配置。
  * @param {object} providerConfig - 用户配置的提供商信息。
  * @param {object} env - Cloudflare Worker 的环境变量。
  * @returns {Promise<object>} - 检测结果对象。

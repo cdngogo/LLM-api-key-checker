@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, reactive } from 'vue';
-import { PROVIDERS, REGIONS } from '@/api';
+import { PROVIDERS, PRIMARY_PROVIDERS, ADDITIONAL_PROVIDERS, REGIONS } from '@/api';
 import { useUiStore } from './ui';
 
 /**
@@ -10,6 +10,10 @@ export const useConfigStore = defineStore('config', () => {
     // --- 状态 (State) ---
     /** @type {object} 所有支持的 API 提供商数据。*/
     const providers = PROVIDERS;
+    /** @type {object} 首页直接展示的一级 API 提供商数据。*/
+    const primaryProviders = PRIMARY_PROVIDERS;
+    /** @type {object} 收纳在“更多预置”中的 API 提供商数据。*/
+    const additionalProviders = ADDITIONAL_PROVIDERS;
     /** @type {object} 所有支持的检测区域数据。*/
     const regions = REGIONS;
     /** @type {Ref<string>} 当前选中的 API 提供商 Key。*/
@@ -101,6 +105,8 @@ export const useConfigStore = defineStore('config', () => {
 
     return {
         providers,
+        primaryProviders,
+        additionalProviders,
         regions,
         currentProvider,
         currentRegion,

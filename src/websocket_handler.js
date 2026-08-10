@@ -1,5 +1,5 @@
 import * as checker from './checkers.js';
-import providersData from '../config/providers.json' with { type: 'json' };
+import providersData from '../config/providers.js';
 import regionsData from '../config/regions.json' with { type: 'json' };
 import { consumeCentralQuota } from './utils/quota.js';
 import { isValidProviderTargetConfig, isValidToken } from './utils/validation.js';
