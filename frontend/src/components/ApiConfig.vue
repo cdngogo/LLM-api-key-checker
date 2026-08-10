@@ -27,8 +27,8 @@ import { computed } from 'vue';
 import { useConfigStore } from '@/stores/config';
 import { useUiStore } from '@/stores/ui';
 import { useCheckerStore } from '@/stores/checker';
-import { fetchModels } from '@/api';
 import { parseKeys } from '@/utils/keyParser';
+import { fetchAvailableModels } from '@/utils/models';
 
 const configStore = useConfigStore();
 const uiStore = useUiStore();
@@ -56,44 +56,31 @@ const handleFetchModels = async () => {
             return;
         }
 
-        // 构造提供商配置对象
-        const providerConfig = {
-            currentProvider: configStore.currentProvider,
-            baseUrl: currentConfig.value.baseUrl,
-            currentRegion: configStore.currentRegion,
-        };
+        const providerConfig = configStore.getModelFetchConfig();
+        const currentModel = currentConfig.value.model;
+        const maxAttempts = Math.min(keys.length, 5);
+        let lastError = null;
 
-        // 如果只有一个 Key，则保持原有行为：失败直接显示错误
-        if (keys.length === 1) {
+        for (let i = 0; i < maxAttempts; i++) {
+            const key = keys[i];
             try {
-                const models = await fetchModels(keys[0], providerConfig);
+                const models = await fetchAvailableModels(key, providerConfig);
                 if (models && models.length > 0) {
-                    models.sort((a, b) => a.localeCompare(b)); // 排序模型列表
-                    uiStore.openModal('modelSelector', { models, currentModel: currentConfig.value.model }); // 打开模型选择器
-                } else {
-                    uiStore.showToast("未能获取到模型列表", "warning");
+                    uiStore.openModal('modelSelector', { models, currentModel });
+                    return;
                 }
             } catch (error) {
-                uiStore.showToast(`获取模型失败: ${error.message}`, "error");
-            }
-        } else {
-            // 如果有多个 Key，则遍历尝试，最多尝试 5 个
-            const maxAttempts = Math.min(keys.length, 5);
-            for (let i = 0; i < maxAttempts; i++) {
-                const key = keys[i];
-                try {
-                    const models = await fetchModels(key, providerConfig);
-                    if (models && models.length > 0) {
-                        models.sort((a, b) => a.localeCompare(b));
-                        uiStore.openModal('modelSelector', { models, currentModel: currentConfig.value.model });
-                        return; // 成功获取，立即返回，不再尝试其他 Key
-                    }
-                } catch (error) {
-                    // 静默失败，继续尝试下一个 Key，仅在控制台输出日志
+                lastError = error;
+                if (keys.length > 1) {
                     console.log(`Key ${key.substring(0, 10)}... failed, trying next.`);
                 }
             }
-            // 如果循环结束都没有成功，则提示失败
+        }
+
+        if (keys.length === 1) {
+            const message = lastError ? `获取模型失败: ${lastError.message}` : '未能获取到模型列表';
+            uiStore.showToast(message, lastError ? 'error' : 'warning');
+        } else {
             const attemptedMsg = maxAttempts < keys.length ? `前 ${maxAttempts} 个` : '所有';
             uiStore.showToast(`${attemptedMsg} KEY 均无法获取到模型列表`, "error");
         }

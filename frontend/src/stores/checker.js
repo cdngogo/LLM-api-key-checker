@@ -8,8 +8,7 @@ import {
     BATCH_SIZE,
     MAX_RECONNECT_ATTEMPTS,
     BUFFER_FLUSH_INTERVAL,
-    BUFFER_MAX_SIZE,
-    RESULT_CATEGORIES
+    BUFFER_MAX_SIZE
 } from '@/constants';
 import { parseKeys } from '@/utils/keyParser';
 
@@ -20,10 +19,6 @@ import { parseKeys } from '@/utils/keyParser';
 export const useCheckerStore = defineStore('checker', () => {
     const configStore = useConfigStore();
     const resultsStore = useResultsStore();
-
-    // --- 会话管理 (Session Management) ---
-    /** @type {Ref<string|null>} 当前浏览器标签页的唯一会话 ID。*/
-    const sessionId = ref(null);
 
     // --- 状态 (State) ---
     /** @type {Ref<boolean>} 检测任务是否正在进行中。*/
@@ -458,19 +453,6 @@ export const useCheckerStore = defineStore('checker', () => {
 
     // --- 公开动作 (Public Actions) ---
     /**
-     * @description 初始化会话，在应用根组件加载时调用。
-     * 为当前浏览器标签页分配一个唯一的 ID，存储在 sessionStorage 中。
-     */
-    function initSession() {
-        let existingSessionId = sessionStorage.getItem('llm_checker_session_id');
-        if (!existingSessionId) {
-            existingSessionId = crypto.randomUUID();
-            sessionStorage.setItem('llm_checker_session_id', existingSessionId);
-        }
-        sessionId.value = existingSessionId;
-    }
-
-    /**
      * @description 开始一个全新的检测任务。
      */
     function startCheck() {
@@ -607,7 +589,6 @@ export const useCheckerStore = defineStore('checker', () => {
     }
 
     return {
-        initSession,
         isChecking,
         isPaused,
         completedCount,

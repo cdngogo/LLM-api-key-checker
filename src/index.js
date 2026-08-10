@@ -5,11 +5,16 @@ import providersData from '../config/providers.json' with { type: 'json' };
 import regionsData from '../config/regions.json' with { type: 'json' };
 import { checkRateLimit } from './utils/rateLimit.js';
 import { getAllowedOrigins, validateOrigin, validateTargetUrl } from './utils/security.js';
+import { consumeCentralQuota } from './utils/quota.js';
+import { isValidProviderTargetConfig, isValidToken } from './utils/validation.js';
+import {
+    MAX_CENTRAL_QUOTA,
+    MAX_RATE_WINDOW_MS,
+    MIN_RATE_WINDOW_MS,
+} from './utils/limits.js';
 
 const PROVIDERS = providersData;
 const REGIONS = regionsData;
-const MAX_TOKEN_LENGTH = 8192;
-const MAX_BASE_URL_LENGTH = 2048;
 const MAX_MODELS_REQUEST_BYTES = 64 * 1024;
 const DEFAULT_MAX_MODELS_REQUESTS_PER_WINDOW = 30;
 const DEFAULT_MODELS_RATE_WINDOW_MS = 60_000;
@@ -47,9 +52,8 @@ async function readRequestJsonWithLimit(request, maxBytes) {
  * @description 使用 Durable Object 为单个客户端 IP 提供跨 isolate 的 Token 配额。
  */
 export class RequestRateLimiter {
-    constructor(state, env) {
+    constructor(state) {
         this.state = state;
-        this.env = env;
     }
 
     async fetch(request) {
@@ -67,8 +71,8 @@ export class RequestRateLimiter {
         const { amount, maxTokens, windowMs } = payload;
         if (
             !Number.isSafeInteger(amount) || amount < 1 ||
-            !Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 1_000_000 ||
-            !Number.isSafeInteger(windowMs) || windowMs < 60_000 || windowMs > 86_400_000
+            !Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > MAX_CENTRAL_QUOTA ||
+            !Number.isSafeInteger(windowMs) || windowMs < MIN_RATE_WINDOW_MS || windowMs > MAX_RATE_WINDOW_MS
         ) {
             return new Response('Invalid request', { status: 400 });
         }
@@ -130,11 +134,6 @@ const RATE_LIMITS = {
  * 它接收一个内部请求，解析出真正的目标 URL 和参数，然后从该 DO 所在的区域发起 fetch。
  */
 export class RegionalFetcher {
-    constructor(state, env) {
-        this.state = state;
-        this.env = env;
-    }
-
     async fetch(request) {
         const { targetUrl, method, headers, body } = await request.json();
         if (!['GET', 'POST'].includes(method) || !validateTargetUrl(targetUrl)) {
@@ -196,17 +195,8 @@ async function handleModelsRequest(request, env) {
 
     const { token, providerConfig } = requestBody;
     if (
-        typeof token !== 'string' ||
-        token.length === 0 ||
-        token.length > MAX_TOKEN_LENGTH ||
-        !providerConfig ||
-        typeof providerConfig !== 'object' ||
-        typeof providerConfig.provider !== 'string' ||
-        typeof providerConfig.baseUrl !== 'string' ||
-        providerConfig.baseUrl.length === 0 ||
-        providerConfig.baseUrl.length > MAX_BASE_URL_LENGTH ||
-        !validateTargetUrl(providerConfig.baseUrl) ||
-        (providerConfig.region && !Object.hasOwn(REGIONS, providerConfig.region))
+        !isValidToken(token) ||
+        !isValidProviderTargetConfig(providerConfig, REGIONS)
     ) {
         return new Response('Invalid request body', { status: 400 });
     }
@@ -268,45 +258,15 @@ function serviceUnavailableResponse(request, env) {
 }
 
 async function consumeModelsQuota(env, clientIP) {
-    if (!env.REQUEST_RATE_LIMITER) {
-        return { allowed: true, retryAfterMs: 0 };
-    }
-
-    const configuredMax = Number.parseInt(env.MAX_MODELS_REQUESTS_PER_IP_PER_WINDOW, 10);
-    const configuredWindow = Number.parseInt(env.MODELS_RATE_WINDOW_MS, 10);
-    const maxTokens = Number.isSafeInteger(configuredMax) && configuredMax > 0 && configuredMax <= 1_000_000
-        ? configuredMax
-        : DEFAULT_MAX_MODELS_REQUESTS_PER_WINDOW;
-    const windowMs = Number.isSafeInteger(configuredWindow) && configuredWindow >= 60_000 && configuredWindow <= 86_400_000
-        ? configuredWindow
-        : DEFAULT_MODELS_RATE_WINDOW_MS;
-
-    try {
-        const id = env.REQUEST_RATE_LIMITER.idFromName(`models:${clientIP}`);
-        const stub = env.REQUEST_RATE_LIMITER.get(id);
-        const response = await stub.fetch(new Request('http://rate-limiter.internal/consume', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ amount: 1, maxTokens, windowMs }),
-        }));
-        if (response.status === 429) {
-            const result = await response.json();
-            return {
-                allowed: false,
-                rateLimited: true,
-                retryAfterMs: result.retryAfterMs || windowMs,
-            };
-        }
-        if (!response.ok) {
-            throw new Error(`Rate limiter returned HTTP ${response.status}`);
-        }
-        const result = await response.json();
-        if (result?.allowed !== true) throw new Error('Rate limiter returned an invalid response');
-        return result;
-    } catch (error) {
-        console.error('Central models rate limiter failed:', error);
-        return { allowed: false, serviceUnavailable: true };
-    }
+    return consumeCentralQuota(env, {
+        bucketName: `models:${clientIP}`,
+        amount: 1,
+        maxValue: env.MAX_MODELS_REQUESTS_PER_IP_PER_WINDOW,
+        windowValue: env.MODELS_RATE_WINDOW_MS,
+        defaultMax: DEFAULT_MAX_MODELS_REQUESTS_PER_WINDOW,
+        defaultWindowMs: DEFAULT_MODELS_RATE_WINDOW_MS,
+        logLabel: 'Central models rate limiter failed',
+    });
 }
 
 /**

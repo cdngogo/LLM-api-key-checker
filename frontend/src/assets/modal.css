@@ -1,6 +1,6 @@
 /**
  * Modal 组件公共样式 - The Anthropic Aesthetic
- * 用于统一 DetailsModal、ConfirmationModal 等模态框的基础样式
+ * 用于统一 DetailsModal 等模态框的基础样式
  */
 
 /* 模态框内容通用样式 */
@@ -38,18 +38,6 @@
     background: var(--text-secondary);
 }
 
-.modal-icon.success {
-    background: var(--accent-success);
-}
-
-.modal-icon.warning {
-    background: var(--accent-warning);
-}
-
-.modal-icon.error {
-    background: var(--accent-error);
-}
-
 /* 模态框标题 - 使用衬线字体 */
 .modal-title {
     font-family: var(--font-serif);
@@ -76,10 +64,6 @@
     margin-top: 24px;
 }
 
-.modal-actions.confirmation {
-    justify-content: space-between;
-}
-
 /* 模态框按钮通用样式 */
 .modal-btn {
     padding: 10px 20px;
@@ -100,16 +84,6 @@
 .modal-btn.primary:hover {
     background: var(--accent-dark-hover);
     transform: translateY(-1px);
-}
-
-.modal-btn.secondary {
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-}
-
-.modal-btn.secondary:hover {
-    background: var(--border-color);
 }
 
 .modal-btn.copy-btn {

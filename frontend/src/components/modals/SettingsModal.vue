@@ -1,7 +1,7 @@
 <template>
     <div class="model-selector-content">
         <div class="model-selector-header">
-            <h3 id="regionSelectorTitle">检测设置</h3>
+            <h3 id="settingsTitle">检测设置</h3>
             <button class="model-selector-close" @click="uiStore.closeModal()">&times;</button>
         </div>
         <div class="model-selector-body">

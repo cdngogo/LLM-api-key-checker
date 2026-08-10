@@ -72,13 +72,9 @@ const handleEscKey = (e) => {
 };
 
 /**
- * @description 组件挂载时添加键盘事件监听器并初始化会话。
+ * @description 组件挂载时添加键盘事件监听器。
  */
 onMounted(() => {
-    // 在应用启动时调用会话初始化，为当前标签页分配唯一 ID。
-    // 这是实现多页面任务隔离的关键步骤。
-    checkerStore.initSession();
-    
     document.addEventListener('keydown', handleEscKey);
 });
 

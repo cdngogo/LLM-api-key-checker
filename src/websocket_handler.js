@@ -1,7 +1,8 @@
 import * as checker from './checkers.js';
 import providersData from '../config/providers.json' with { type: 'json' };
 import regionsData from '../config/regions.json' with { type: 'json' };
-import { validateTargetUrl } from './utils/security.js';
+import { consumeCentralQuota } from './utils/quota.js';
+import { isValidProviderTargetConfig, isValidToken } from './utils/validation.js';
 
 const PROVIDERS = providersData;
 const REGIONS = regionsData;
@@ -16,9 +17,7 @@ const MAX_TOKENS_PER_SESSION = 50000;
  * @description 单个批次允许的最大并发数。
  */
 const MAX_CONCURRENCY = 20;
-const MAX_TOKEN_LENGTH = 8192;
 const MAX_MESSAGE_BYTES = 5 * 1024 * 1024;
-const MAX_BASE_URL_LENGTH = 2048;
 const MAX_MODEL_LENGTH = 512;
 const MAX_PROMPT_LENGTH = 4096;
 const MAX_VALIDATION_TOKENS = 1024;
@@ -40,12 +39,12 @@ function isValidOptionalTokenLimit(value) {
 export class TaskManager {
     /**
      * @param {object} env - Cloudflare Worker 的环境变量。
-     * @param {object} callbacks - 包含 onResult, onStatus, onError, onBatchDone 等回调函数。
+     * @param {object} callbacks - 包含 onResult, onError, onBatchDone 等回调函数。
      */
-    constructor(env, { onResult, onStatus, onError, onBatchDone }, clientIP = 'unknown') {
+    constructor(env, { onResult, onError, onBatchDone }, clientIP = 'unknown') {
         this.env = env;
         this.clientIP = clientIP;
-        this.callbacks = { onResult, onStatus, onError, onBatchDone };
+        this.callbacks = { onResult, onError, onBatchDone };
         this.isProcessing = false;
         this.isStarting = false;
         this.isTerminated = false;
@@ -99,13 +98,7 @@ export class TaskManager {
 
         if (
             !Array.isArray(tokens) ||
-            !providerConfig ||
-            typeof providerConfig !== 'object' ||
-            typeof providerConfig.provider !== 'string' ||
-            typeof providerConfig.baseUrl !== 'string' ||
-            providerConfig.baseUrl.length === 0 ||
-            providerConfig.baseUrl.length > MAX_BASE_URL_LENGTH ||
-            !validateTargetUrl(providerConfig.baseUrl) ||
+            !isValidProviderTargetConfig(providerConfig, REGIONS) ||
             typeof providerConfig.model !== 'string' ||
             providerConfig.model.length > MAX_MODEL_LENGTH ||
             typeof providerConfig.enableStream !== 'boolean' ||
@@ -114,8 +107,7 @@ export class TaskManager {
                 providerConfig.validationPrompt.length > MAX_PROMPT_LENGTH
             )) ||
             !isValidOptionalTokenLimit(providerConfig.validationMaxTokens) ||
-            !isValidOptionalTokenLimit(providerConfig.validationMaxOutputTokens) ||
-            (providerConfig.region && !Object.hasOwn(REGIONS, providerConfig.region))
+            !isValidOptionalTokenLimit(providerConfig.validationMaxOutputTokens)
         ) {
             this.callbacks.onError('Invalid initial data for a batch');
             return;
@@ -126,9 +118,7 @@ export class TaskManager {
             tokens.some(item =>
                 !item ||
                 typeof item !== 'object' ||
-                typeof item.token !== 'string' ||
-                item.token.length === 0 ||
-                item.token.length > MAX_TOKEN_LENGTH ||
+                !isValidToken(item.token) ||
                 !Number.isSafeInteger(item.order)
             )
         ) {
@@ -196,45 +186,15 @@ export class TaskManager {
     }
 
     async consumeGlobalQuota(amount) {
-        if (!this.env.REQUEST_RATE_LIMITER) {
-            return { allowed: true, retryAfterMs: 0 };
-        }
-
-        const configuredMax = Number.parseInt(this.env.MAX_TOKENS_PER_IP_PER_WINDOW, 10);
-        const configuredWindow = Number.parseInt(this.env.TOKEN_RATE_WINDOW_MS, 10);
-        const maxTokens = Number.isSafeInteger(configuredMax) && configuredMax > 0 && configuredMax <= 1_000_000
-            ? configuredMax
-            : DEFAULT_MAX_TOKENS_PER_IP_WINDOW;
-        const windowMs = Number.isSafeInteger(configuredWindow) && configuredWindow >= 60_000 && configuredWindow <= 86_400_000
-            ? configuredWindow
-            : DEFAULT_TOKEN_RATE_WINDOW_MS;
-
-        try {
-            const id = this.env.REQUEST_RATE_LIMITER.idFromName(`tokens:${this.clientIP}`);
-            const stub = this.env.REQUEST_RATE_LIMITER.get(id);
-            const response = await stub.fetch(new Request('http://rate-limiter.internal/consume', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ amount, maxTokens, windowMs }),
-            }));
-            if (response.status === 429) {
-                const result = await response.json();
-                return {
-                    allowed: false,
-                    rateLimited: true,
-                    retryAfterMs: result.retryAfterMs || windowMs,
-                };
-            }
-            if (!response.ok) {
-                throw new Error(`Rate limiter returned HTTP ${response.status}`);
-            }
-            const result = await response.json();
-            if (result?.allowed !== true) throw new Error('Rate limiter returned an invalid response');
-            return result;
-        } catch (error) {
-            console.error('Central token rate limiter failed:', error);
-            return { allowed: false, serviceUnavailable: true };
-        }
+        return consumeCentralQuota(this.env, {
+            bucketName: `tokens:${this.clientIP}`,
+            amount,
+            maxValue: this.env.MAX_TOKENS_PER_IP_PER_WINDOW,
+            windowValue: this.env.TOKEN_RATE_WINDOW_MS,
+            defaultMax: DEFAULT_MAX_TOKENS_PER_IP_WINDOW,
+            defaultWindowMs: DEFAULT_TOKEN_RATE_WINDOW_MS,
+            logLabel: 'Central token rate limiter failed',
+        });
     }
 
     /**
@@ -331,7 +291,6 @@ export function handleWebSocketSession(ws, env, clientIP = 'unknown') {
 
     const taskManager = new TaskManager(env, {
         onResult: (result) => safeSend(JSON.stringify({ type: 'result', data: result })),
-        onStatus: (message) => safeSend(JSON.stringify({ type: 'status', message })),
         onError: (message) => {
             safeSend(JSON.stringify({ type: 'error', message }));
         },

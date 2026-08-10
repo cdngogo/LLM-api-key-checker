@@ -7,7 +7,7 @@
                 <input type="checkbox" v-model="currentConfig.enableStream" :disabled="checkerStore.isChecking">
                 <span class="slider"></span>
             </label>
-            <button @click="uiStore.openModal('regionSelector')" class="region-btn" title="检测设置"
+            <button @click="uiStore.openModal('settings')" class="region-btn" title="检测设置"
                 :disabled="checkerStore.isChecking">⚙️</button>
         </div>
     </div>

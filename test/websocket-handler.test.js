@@ -20,7 +20,6 @@ function createManager(overrides = {}) {
     const done = new Promise(resolve => { doneResolve = resolve; });
     const manager = new TaskManager({}, {
         onResult() {},
-        onStatus() {},
         onError(message) { errors.push(message); },
         onBatchDone() { doneResolve(); },
         ...overrides,
@@ -104,7 +103,6 @@ test('central token quota failures stop a batch before upstream work', async () 
     const errors = [];
     const manager = new TaskManager(env, {
         onResult() {},
-        onStatus() {},
         onError(message) { errors.push(message); },
         onBatchDone() {},
     }, '203.0.113.9');
@@ -139,7 +137,6 @@ test('closing a session while central quota is pending prevents work from starti
     };
     const manager = new TaskManager(env, {
         onResult() {},
-        onStatus() {},
         onError() {},
         onBatchDone() {},
     }, '203.0.113.10');
@@ -171,7 +168,6 @@ test('central token limiter infrastructure failures are not reported as quota ex
     const errors = [];
     const manager = new TaskManager(env, {
         onResult() {},
-        onStatus() {},
         onError(message) { errors.push(message); },
         onBatchDone() {},
     }, '203.0.113.11');

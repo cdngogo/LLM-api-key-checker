@@ -193,8 +193,12 @@ llm-api-key-checker/
 │   ├── websocket_handler.js      # WebSocket 会话及任务管理
 │   ├── model_fetchers.js         # 模型列表获取
 │   └── utils/
+│       ├── body.js               # 限长响应读取
 │       ├── fetcher.js            # HTTP 请求工具
+│       ├── limits.js             # 后端公共限制常量
+│       ├── quota.js              # 集中配额客户端
 │       ├── security.js           # 安全验证
+│       ├── validation.js         # 请求配置校验
 │       ├── userAgent.js          # UA 随机化
 │       └── cors.js               # CORS 处理
 ├── frontend/
@@ -209,6 +213,9 @@ llm-api-key-checker/
 │   │   │   ├── results.js        # 结果状态
 │   │   │   ├── checker.js        # 检测状态
 │   │   │   └── ui.js             # UI 状态
+│   │   ├── utils/
+│   │   │   ├── keyParser.js      # Key 文本解析
+│   │   │   └── models.js         # 模型列表加载
 │   │   └── components/
 │   │       ├── modals/
 │   │       └── ...               # 其他组件

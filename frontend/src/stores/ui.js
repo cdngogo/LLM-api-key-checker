@@ -22,8 +22,6 @@ export const useUiStore = defineStore('ui', {
         modalData: {},
         /** @type {string} 模型选择器中的搜索关键词。*/
         modelSearch: '',
-        /** @type {Function|null} 确认模态框的 Promise resolve 函数。*/
-        confirmationPromise: null,
     }),
     getters: {
         /**
@@ -93,36 +91,9 @@ export const useUiStore = defineStore('ui', {
          * @description 关闭当前激活的模态框。
          */
         closeModal() {
-            // 如果是确认模态框，且有待处理的 Promise，则拒绝 Promise
-            if (this.activeModal === 'confirmation' && this.confirmationPromise) {
-                this.confirmationPromise(false);
-                this.confirmationPromise = null;
-            }
             this.activeModal = null;
             this.modalData = {};
             this.modelSearch = '';
-        },
-        /**
-         * @description 显示一个确认模态框，并返回一个 Promise，用于处理用户的选择。
-         * @param {string} message - 确认消息文本。
-         * @returns {Promise<boolean>} - 用户确认则 resolve true，取消则 resolve false。
-         */
-        showConfirmation(message) {
-            return new Promise((resolve) => {
-                this.confirmationPromise = resolve;
-                this.openModal('confirmation', { message });
-            });
-        },
-        /**
-         * @description 处理确认模态框的用户选择。
-         * @param {boolean} isConfirmed - 用户是否确认。
-         */
-        handleConfirmation(isConfirmed) {
-            if (this.confirmationPromise) {
-                this.confirmationPromise(isConfirmed);
-            }
-            this.activeModal = null;
-            this.confirmationPromise = null;
         }
     }
 });

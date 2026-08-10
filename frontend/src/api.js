@@ -13,7 +13,7 @@ export const PROVIDERS = providersData;
 /**
  * @description 调用后端 /models 接口，获取指定提供商的可用模型列表。
  * @param {string} token - 用于认证的 API Key。
- * @param {object} providerConfig - 提供商的配置信息，包含当前提供商、基础URL和区域。
+ * @param {{provider: string, baseUrl: string, region?: string}} providerConfig - 提供商配置快照。
  * @returns {Promise<string[]>} - 可用模型ID的数组。
  * @throws {Error} - 如果请求失败或返回无效数据。
  */
@@ -21,9 +21,9 @@ export async function fetchModels(token, providerConfig) {
     const body = {
         token,
         providerConfig: {
-            provider: providerConfig.currentProvider,
+            provider: providerConfig.provider,
             baseUrl: providerConfig.baseUrl,
-            region: providerConfig.currentRegion,
+            region: providerConfig.region,
         },
     };
     const response = await fetch('/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

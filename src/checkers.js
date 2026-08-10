@@ -1,5 +1,6 @@
 import { secureProxiedFetch } from './utils/fetcher.js';
 import { normalizeBaseUrl } from './utils/url.js';
+import { readBodyJsonWithLimit, readBodyTextWithLimit } from './utils/body.js';
 
 /**
  * @description 余额获取失败时的默认返回值。
@@ -7,33 +8,18 @@ import { normalizeBaseUrl } from './utils/url.js';
 const BALANCE_UNAVAILABLE = { balance: -1, message: "有效但无法获取余额" };
 const MAX_VALIDATION_RESPONSE_BYTES = 2 * 1024 * 1024;
 
-async function readTextWithLimit(response, maxBytes = MAX_VALIDATION_RESPONSE_BYTES) {
-    if (!response.body) return '';
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let totalBytes = 0;
-    let text = '';
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            totalBytes += value.byteLength;
-            if (totalBytes > maxBytes) {
-                try { await reader.cancel('Validation response is too large'); } catch (_) {}
-                throw new Error(`Validation response exceeds ${maxBytes} bytes`);
-            }
-            text += decoder.decode(value, { stream: true });
-        }
-        text += decoder.decode();
-        return text;
-    } finally {
-        try { reader.releaseLock(); } catch (_) {}
-    }
+function readValidationText(response) {
+    return readBodyTextWithLimit(response, {
+        maxBytes: MAX_VALIDATION_RESPONSE_BYTES,
+        label: 'Validation response',
+    });
 }
 
-async function readJsonWithLimit(response, maxBytes = MAX_VALIDATION_RESPONSE_BYTES) {
-    return JSON.parse(await readTextWithLimit(response, maxBytes));
+function readValidationJson(response) {
+    return readBodyJsonWithLimit(response, {
+        maxBytes: MAX_VALIDATION_RESPONSE_BYTES,
+        label: 'Validation response',
+    });
 }
 
 async function discardResponseBody(response) {
@@ -53,7 +39,7 @@ const balanceCheckers = {
         const creditsUrl = normalizeBaseUrl(baseUrl).replace("/v1", "") + "/v1/credits";
         const creditsResponse = await secureProxiedFetch(creditsUrl, { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env, 10000);
         if (creditsResponse.ok) {
-            const d = await readJsonWithLimit(creditsResponse);
+            const d = await readValidationJson(creditsResponse);
             const total = d.data?.total_credits || 0;
             const usage = d.data?.total_usage || 0;
             return {
@@ -69,7 +55,7 @@ const balanceCheckers = {
     async checkSiliconFlowBalance(token, baseUrl, region, env) {
         const resp = await secureProxiedFetch(normalizeBaseUrl(baseUrl).replace("/v1", "") + "/v1/user/info", { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env, 10000);
         if (resp.ok) {
-            const d = await readJsonWithLimit(resp);
+            const d = await readValidationJson(resp);
             const bal = parseFloat(d.data?.balance);
             return {
                 balance: isNaN(bal) ? -1 : parseFloat(bal.toFixed(4)),
@@ -86,7 +72,7 @@ const balanceCheckers = {
             region, env, 10000
         );
         if (resp.ok) {
-            const d = await readJsonWithLimit(resp);
+            const d = await readValidationJson(resp);
             const info = d.balance_infos?.find((b) => b.currency === "USD") || d.balance_infos?.find((b) => b.currency === "CNY") || d.balance_infos?.[0];
             if (info) {
                 return {
@@ -104,7 +90,7 @@ const balanceCheckers = {
     async checkMoonshotBalance(token, baseUrl, region, env) {
         const balanceResponse = await secureProxiedFetch(normalizeBaseUrl(baseUrl) + "/users/me/balance", { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env, 10000);
         if (balanceResponse.ok) {
-            const data = await readJsonWithLimit(balanceResponse);
+            const data = await readValidationJson(balanceResponse);
             const balance = Number.parseFloat(data.data?.available_balance);
             return {
                 balance: Number.isFinite(balance) ? balance : -1,
@@ -122,7 +108,7 @@ const balanceCheckers = {
             region, env, 10000
         );
         if (response.ok) {
-            const d = await readJsonWithLimit(response);
+            const d = await readValidationJson(response);
             if (d.code === true && d.data) {
                 const tokenToUsdRate = 500000;
                 const availableUsd = parseFloat((d.data.total_available / tokenToUsdRate).toFixed(2));
@@ -147,7 +133,7 @@ const balanceCheckers = {
  * @returns {Promise<{message: string, rawError: object, errorCategory: string}>} - 包含格式化消息、原始错误和错误分类的对象。
  */
 async function handleApiError(response) {
-    const rawText = await readTextWithLimit(response);
+    const rawText = await readValidationText(response);
     let rawErrorContent;
     try {
         rawErrorContent = JSON.parse(rawText);
@@ -294,7 +280,7 @@ async function _checkTokenTemplate(token, providerMeta, providerConfig, env, str
                     }
                 }
             } else {
-                const text = await readTextWithLimit(response);
+                const text = await readValidationText(response);
                 try {
                     result.rawResponse = JSON.parse(text);
                 } catch {

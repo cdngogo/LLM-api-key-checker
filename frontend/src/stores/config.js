@@ -84,6 +84,18 @@ export const useConfigStore = defineStore('config', () => {
         return providerConfigs[currentProvider.value];
     }
 
+    /**
+     * @description 生成模型列表接口使用的不可变配置快照。
+     */
+    function getModelFetchConfig() {
+        const currentConfig = getCurrentProviderConfig();
+        return {
+            provider: currentProvider.value,
+            baseUrl: currentConfig.baseUrl,
+            region: currentRegion.value,
+        };
+    }
+
     // 初始化默认提供商配置
     ensureProviderConfig(currentProvider.value);
 
@@ -102,6 +114,7 @@ export const useConfigStore = defineStore('config', () => {
         selectProvider,
         selectRegion,
         clearTokens,
-        getCurrentProviderConfig
+        getCurrentProviderConfig,
+        getModelFetchConfig
     };
 });

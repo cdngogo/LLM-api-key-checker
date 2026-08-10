@@ -73,7 +73,7 @@ import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import { useResultsStore } from '@/stores/results';
 import { useUiStore } from '@/stores/ui';
 import { useConfigStore } from '@/stores/config';
-import { fetchModels } from '@/api';
+import { fetchAvailableModels } from '@/utils/models';
 
 const props = defineProps({
     category: { type: String, required: true },
@@ -216,13 +216,7 @@ const handleFetchModelsForToken = async (token, event) => {
     button.innerHTML = '<span class="loader"></span>'; // 显示加载动画
     button.disabled = true; // 禁用按钮
     try {
-        const providerConfigForFetch = {
-            currentProvider: configStore.currentProvider,
-            baseUrl: configStore.getCurrentProviderConfig().baseUrl,
-            currentRegion: configStore.currentRegion,
-        };
-        
-        const models = await fetchModels(token, providerConfigForFetch);
+        const models = await fetchAvailableModels(token, configStore.getModelFetchConfig());
         
         if (models && models.length > 0) {
             uiStore.openModal('modelSelector', { models });

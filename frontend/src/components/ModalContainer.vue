@@ -16,7 +16,6 @@ const uiStore = useUiStore();
 const DetailsModal = defineAsyncComponent(() => import('./modals/DetailsModal.vue'));
 const ModelSelectorModal = defineAsyncComponent(() => import('./modals/ModelSelectorModal.vue'));
 const SettingsModal = defineAsyncComponent(() => import('./modals/SettingsModal.vue'));
-const ConfirmationModal = defineAsyncComponent(() => import('./modals/ConfirmationModal.vue'));
 
 /**
  * @description 计算属性，根据 uiStore.activeModal 的值动态选择要渲染的模态框组件。
@@ -27,10 +26,8 @@ const activeModalComponent = computed(() => {
             return DetailsModal;
         case 'modelSelector':
             return ModelSelectorModal;
-        case 'regionSelector': // 注意：这里 'regionSelector' 实际对应的是 SettingsModal
+        case 'settings':
             return SettingsModal;
-        case 'confirmation':
-            return ConfirmationModal;
         default:
             return null;
     }

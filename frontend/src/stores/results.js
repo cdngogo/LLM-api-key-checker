@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, reactive, computed, shallowRef, triggerRef } from 'vue';
+import { ref, reactive, shallowRef } from 'vue';
 import { useConfigStore } from './config';
 import { categorizeTokenError } from '@/api';
 import { RESULT_CATEGORIES } from '@/constants';
@@ -22,6 +22,15 @@ function escapeHtml(text) {
     return str.replace(/[&<>"']/g, char => htmlEscapes[char]);
 }
 
+function getBalanceDisplayContext(res) {
+    const balance = res.balance;
+    return {
+        safeToken: escapeHtml(res.token),
+        balance,
+        balanceClass: balance >= 10 ? 'high' : balance > 0 ? 'medium' : 'low',
+    };
+}
+
 /**
  * @description 定义了不同提供商的显示文本格式化策略。
  * 每个函数接收结果对象 `res`，并返回格式化后的 HTML 字符串。
@@ -32,31 +41,25 @@ const displayTextFormatters = {
      * @param {object} res - 结果对象。
      */
     openrouter: (res) => {
-        const safeToken = escapeHtml(res.token);
-        const bal = res.balance;
-        const balClass = bal >= 10 ? "high" : bal > 0 ? "medium" : "low";
-        return `${safeToken} <span class="message">(余额：<span class="balance-${balClass}">${escapeHtml(bal)} / ${escapeHtml(res.totalBalance)}</span>)</span>`;
+        const { safeToken, balance, balanceClass } = getBalanceDisplayContext(res);
+        return `${safeToken} <span class="message">(余额：<span class="balance-${balanceClass}">${escapeHtml(balance)} / ${escapeHtml(res.totalBalance)}</span>)</span>`;
     },
     /**
      * @description DeepSeek 提供商的余额显示格式化。
      * @param {object} res - 结果对象。
      */
     deepseek: (res) => {
-        const safeToken = escapeHtml(res.token);
-        const bal = res.balance;
-        const balClass = bal >= 10 ? "high" : bal > 0 ? "medium" : "low";
+        const { safeToken, balanceClass } = getBalanceDisplayContext(res);
         const balanceDisplay = res.currency === 'USD' ? `$${res.balance.toFixed(2)}` : `${res.balance} ${escapeHtml(res.currency)}`;
-        return `${safeToken} <span class="message">(余额：<span class="balance-${balClass}">${escapeHtml(balanceDisplay)}</span> | 赠送：${escapeHtml(res.grantedBalance)} | 充值：${escapeHtml(res.toppedUpBalance)})</span>`;
+        return `${safeToken} <span class="message">(余额：<span class="balance-${balanceClass}">${escapeHtml(balanceDisplay)}</span> | 赠送：${escapeHtml(res.grantedBalance)} | 充值：${escapeHtml(res.toppedUpBalance)})</span>`;
     },
     /**
      * @description 默认的余额显示格式化，适用于大多数提供商。
      * @param {object} res - 结果对象。
      */
     default: (res) => {
-        const safeToken = escapeHtml(res.token);
-        const bal = res.balance;
-        const balClass = bal >= 10 ? "high" : bal > 0 ? "medium" : "low";
-        let balanceDisplay = bal !== undefined ? String(bal) : "-";
+        const { safeToken, balance, balanceClass } = getBalanceDisplayContext(res);
+        let balanceDisplay = balance !== undefined ? String(balance) : "-";
 
         if (res.currency === 'USD') {
             balanceDisplay = `$${res.balance.toFixed(2)}`;
@@ -76,7 +79,7 @@ const displayTextFormatters = {
             extraInfo += ` | 过期：${escapeHtml(expiresDate)}`;
         }
 
-        return `${safeToken} <span class="message">(余额：<span class="balance-${balClass}">${escapeHtml(balanceDisplay)}</span>${extraInfo})</span>`;
+        return `${safeToken} <span class="message">(余额：<span class="balance-${balanceClass}">${escapeHtml(balanceDisplay)}</span>${extraInfo})</span>`;
     },
     /**
      * @description 没有余额信息的提供商的显示格式化。
@@ -87,9 +90,6 @@ const displayTextFormatters = {
         return `${safeToken} <span class="message">(有效)</span>`;
     }
 };
-
-/** @description 所有结果类别的枚举 */
-const CATEGORIES = RESULT_CATEGORIES;
 
 /**
  * @description results Store 用于管理 API Key 检测结果的显示和排序。
@@ -102,21 +102,16 @@ export const useResultsStore = defineStore('results', () => {
 
     /**
      * @description 使用 shallowRef 存储结果数组，减少响应式开销。
-     * 每个类别的数组变化需要手动调用 triggerRef 来触发更新。
+     * 每次更新都会替换数组引用，以触发视图刷新。
      */
-    const results = {
-        valid: shallowRef([]),
-        lowBalance: shallowRef([]),
-        zeroBalance: shallowRef([]),
-        rateLimit: shallowRef([]),
-        invalid: shallowRef([]),
-        duplicate: shallowRef([]),
-    };
+    const results = Object.fromEntries(
+        RESULT_CATEGORIES.map(category => [category, shallowRef([])]),
+    );
 
     /** @type {Reactive<object>} 各个结果类别的搜索关键词。*/
-    const searchTerms = reactive({
-        valid: '', lowBalance: '', zeroBalance: '', rateLimit: '', invalid: '', duplicate: '',
-    });
+    const searchTerms = reactive(Object.fromEntries(
+        RESULT_CATEGORIES.map(category => [category, '']),
+    ));
 
     /** @type {Reactive<object>} 各个结果类别的排序状态。*/
     const sortState = reactive({
@@ -132,83 +127,6 @@ export const useResultsStore = defineStore('results', () => {
         return _configStore;
     };
 
-    // --- 按类别独立计算的 Getters ---
-    /**
-     * @description 为每个类别创建独立的过滤+排序计算属性。
-     * 这样只有对应类别的数据变化时才会重新计算，而不是所有类别一起计算。
-     */
-    const _sortedResultsComputed = {};
-
-    for (const category of CATEGORIES) {
-        _sortedResultsComputed[category] = computed(() => {
-            const data = results[category].value;
-            const searchTerm = searchTerms[category]?.toLowerCase() || '';
-            const sortKey = sortState[category];
-
-            // 1. 过滤
-            let filtered;
-            if (!searchTerm) {
-                filtered = data;
-            } else {
-                filtered = data.filter(r =>
-                    r.token.toLowerCase().includes(searchTerm) ||
-                    r.displayText.toLowerCase().includes(searchTerm)
-                );
-            }
-
-            // 2. 排序（仅在需要时创建副本）
-            if (!sortKey || sortKey === 'default') {
-                // 默认排序：按 order 升序
-                // 如果已经是按 order 排序的，直接返回（添加时保证顺序）
-                if (filtered === data && data.length > 0) {
-                    // 检查是否需要排序
-                    let needsSort = false;
-                    for (let i = 1; i < data.length; i++) {
-                        if (data[i].order < data[i - 1].order) {
-                            needsSort = true;
-                            break;
-                        }
-                    }
-                    if (!needsSort) {
-                        return filtered;
-                    }
-                }
-                return [...filtered].sort((a, b) => a.order - b.order);
-            }
-
-            // 余额排序
-            return [...filtered].sort((a, b) => {
-                const balanceA = a.balance ?? -Infinity;
-                const balanceB = b.balance ?? -Infinity;
-                return sortKey === 'balance-desc' ? balanceB - balanceA : balanceA - balanceB;
-            });
-        });
-    }
-
-    /**
-     * @description 获取指定类别的排序结果。
-     * @param {string} category - 结果类别。
-     * @returns {Array<object>} - 排序后的结果数组。
-     */
-    function getSortedResults(category) {
-        const comp = _sortedResultsComputed[category];
-        return comp ? comp.value : [];
-    }
-
-    /**
-     * @description 兼容旧 API 的 sortedResults 代理对象。
-     * 使得 resultsStore.sortedResults[category] 可以正常工作。
-     */
-    const sortedResults = new Proxy({}, {
-        get(target, prop) {
-            if (_sortedResultsComputed[prop]) {
-                return _sortedResultsComputed[prop].value;
-            }
-            return undefined;
-        }
-    });
-
-    // --- 兼容旧 API 的代理对象 ---
     /**
      * @description 创建一个代理对象，使得 resultsStore.results[category] 可以正常工作。
      */
@@ -264,7 +182,7 @@ export const useResultsStore = defineStore('results', () => {
     }
 
     /**
-     * @description 构建结果对象，供 addResult 和 addResults 内部使用。
+     * @description 构建结果对象，供 addResults 内部使用。
      * @param {object} res - 检测结果对象。
      * @param {number} order - 结果的原始顺序。
      * @param {string} provider - 当前提供商。
@@ -303,21 +221,6 @@ export const useResultsStore = defineStore('results', () => {
     }
 
     /**
-     * @description 添加一个检测结果到对应的类别中。
-     * @param {object} res - 检测结果对象。
-     * @param {number} order - 结果的原始顺序。
-     */
-    function addResult(res, order) {
-        const configStore = getConfigStore();
-        const built = buildResultItem(res, order, configStore.currentProvider);
-        if (!built) return;
-
-        const { category, item } = built;
-        // 使用 shallowRef，需要创建新数组来触发更新
-        results[category].value = [...results[category].value, item];
-    }
-
-    /**
      * @description 批量添加检测结果，减少响应式触发次数。
      * @param {Array<{res: object, order: number}>} items - 检测结果数组。
      */
@@ -329,7 +232,7 @@ export const useResultsStore = defineStore('results', () => {
 
         // 按类别分组
         const grouped = {};
-        for (const category of CATEGORIES) {
+        for (const category of RESULT_CATEGORIES) {
             grouped[category] = [];
         }
 
@@ -341,7 +244,7 @@ export const useResultsStore = defineStore('results', () => {
         }
 
         // 批量更新每个类别（只触发一次响应式更新）
-        for (const category of CATEGORIES) {
+        for (const category of RESULT_CATEGORIES) {
             if (grouped[category].length > 0) {
                 results[category].value = [...results[category].value, ...grouped[category]];
             }
@@ -352,7 +255,7 @@ export const useResultsStore = defineStore('results', () => {
      * @description 清空所有检测结果。
      */
     function clearResults() {
-        for (const category of CATEGORIES) {
+        for (const category of RESULT_CATEGORIES) {
             results[category].value = [];
         }
     }
@@ -371,9 +274,6 @@ export const useResultsStore = defineStore('results', () => {
         results: resultsProxy,
         searchTerms,
         sortState,
-        sortedResults,
-        getSortedResults,
-        addResult,
         addResults,
         clearResults,
         setSort

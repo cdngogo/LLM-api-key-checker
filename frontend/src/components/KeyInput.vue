@@ -64,21 +64,21 @@ const triggerFileInput = () => {
     fileInput.value.click();
 };
 
+const importTextFile = (file) => {
+    if (!file.name.endsWith('.txt') && file.type !== 'text/plain') {
+        uiStore.showToast("仅支持 .txt 文本文件", "warning");
+        return;
+    }
+    readFile(file);
+};
+
 /**
  * @description 处理文件导入事件（通过文件选择对话框）。
  * @param {Event} event - 文件输入框的 change 事件。
  */
 const handleFileImport = (event) => {
     const file = event.target.files[0];
-    if (file) {
-        // 检查文件类型
-        if (!file.name.endsWith('.txt') && file.type !== 'text/plain') {
-            uiStore.showToast("仅支持 .txt 文本文件", "warning");
-            event.target.value = '';
-            return;
-        }
-        readFile(file);
-    }
+    if (file) importTextFile(file);
     event.target.value = ''; // 重置文件输入框
 };
 
@@ -89,14 +89,7 @@ const handleFileImport = (event) => {
 const handleFileDrop = (event) => {
     isDragOver.value = false;
     const file = event.dataTransfer.files[0];
-    if (file) {
-        // 检查文件类型
-        if (!file.name.endsWith('.txt') && file.type !== 'text/plain') {
-            uiStore.showToast("仅支持 .txt 文本文件", "warning");
-            return;
-        }
-        readFile(file);
-    }
+    if (file) importTextFile(file);
 };
 
 /**

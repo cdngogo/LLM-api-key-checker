@@ -1,5 +1,6 @@
 import { secureProxiedFetch } from './utils/fetcher.js';
 import { normalizeBaseUrl } from './utils/url.js';
+import { readBodyJsonWithLimit, readBodyTextWithLimit } from './utils/body.js';
 import providersData from '../config/providers.json' with { type: 'json' };
 
 const PROVIDERS = providersData;
@@ -10,38 +11,26 @@ const MAX_MODEL_PAGES = 20;
 const MAX_MODELS = 10000;
 const MAX_PAGE_TOKEN_LENGTH = 4096;
 
-async function readTextWithLimit(response, maxBytes = MAX_MODEL_RESPONSE_BYTES, totalBudget = null) {
-    if (!response.body) return '';
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let totalBytes = 0;
-    let text = '';
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            totalBytes += value.byteLength;
-            if (totalBudget) totalBudget.usedBytes += value.byteLength;
-            if (totalBytes > maxBytes || (totalBudget && totalBudget.usedBytes > totalBudget.maxBytes)) {
-                try { await reader.cancel('Model response is too large'); } catch (_) {}
-                if (totalBudget && totalBudget.usedBytes > totalBudget.maxBytes) {
-                    throw new Error(`Model pagination exceeds total response limit (${totalBudget.maxBytes} bytes)`);
-                }
-                throw new Error(`Model response exceeds ${maxBytes} bytes`);
-            }
-            text += decoder.decode(value, { stream: true });
-        }
-        text += decoder.decode();
-        return text;
-    } finally {
-        try { reader.releaseLock(); } catch (_) {}
-    }
+function readModelText(response, totalBudget = null) {
+    return readBodyTextWithLimit(response, {
+        maxBytes: MAX_MODEL_RESPONSE_BYTES,
+        label: 'Model response',
+        budget: totalBudget,
+        totalLimitMessage: totalBudget
+            ? `Model pagination exceeds total response limit (${totalBudget.maxBytes} bytes)`
+            : '',
+    });
 }
 
-async function readJsonWithLimit(response, totalBudget = null) {
-    const text = await readTextWithLimit(response, MAX_MODEL_RESPONSE_BYTES, totalBudget);
-    return JSON.parse(text);
+function readModelJson(response, totalBudget = null) {
+    return readBodyJsonWithLimit(response, {
+        maxBytes: MAX_MODEL_RESPONSE_BYTES,
+        label: 'Model response',
+        budget: totalBudget,
+        totalLimitMessage: totalBudget
+            ? `Model pagination exceeds total response limit (${totalBudget.maxBytes} bytes)`
+            : '',
+    });
 }
 
 function normalizeModelIds(models) {
@@ -62,8 +51,8 @@ function normalizeModelIds(models) {
 async function fetchOpenAIModels(token, baseUrl, region, env) {
     const apiUrl = normalizeBaseUrl(baseUrl) + "/models";
     const response = await secureProxiedFetch(apiUrl, { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env);
-    if (!response.ok) throw new Error("HTTP " + response.status + ": " + (await readTextWithLimit(response)));
-    const data = await readJsonWithLimit(response);
+    if (!response.ok) throw new Error("HTTP " + response.status + ": " + (await readModelText(response)));
+    const data = await readModelJson(response);
     if (Array.isArray(data)) return normalizeModelIds(data);
     if (data && Array.isArray(data.data)) return normalizeModelIds(data.data);
     return [];
@@ -86,8 +75,8 @@ async function fetchGitHubModels(token, baseUrl, region, env) {
     }
     const apiUrl = normalizeBaseUrl(baseUrl || PROVIDERS.github.defaultBase).replace("/inference", "") + "/catalog/models";
     const response = await secureProxiedFetch(apiUrl, { method: "GET", headers: { Authorization: "Bearer " + token } }, region, env);
-    if (!response.ok) throw new Error("Fallback /catalog/models failed with HTTP " + response.status + ": " + (await readTextWithLimit(response)));
-    const data = await readJsonWithLimit(response);
+    if (!response.ok) throw new Error("Fallback /catalog/models failed with HTTP " + response.status + ": " + (await readModelText(response)));
+    const data = await readModelJson(response);
     if (data && Array.isArray(data.data) && data.data.length > 0) return normalizeModelIds(data.data);
     if (Array.isArray(data) && data.length > 0) return normalizeModelIds(data);
     throw new Error("Fallback /catalog/models returned no models.");
@@ -133,11 +122,11 @@ async function fetchGoogleModels(token, baseUrl, region, env) {
         );
 
         if (!response.ok) {
-            const err = await readJsonWithLimit(response, totalBudget).catch(() => null);
+            const err = await readModelJson(response, totalBudget).catch(() => null);
             throw new Error(err?.error?.message || `HTTP ${response.status}`);
         }
 
-        const data = await readJsonWithLimit(response, totalBudget);
+        const data = await readModelJson(response, totalBudget);
         const models = Array.isArray(data.models) ? data.models : [];
 
         // 过滤支持 generateContent 且非 embedding 模型
@@ -183,10 +172,10 @@ async function fetchAnthropicModels(token, baseUrl, region, env) {
         headers: { "x-api-key": token, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
     }, region, env);
     if (!response.ok) {
-        const err = await readJsonWithLimit(response).catch(() => null);
+        const err = await readModelJson(response).catch(() => null);
         throw new Error(err?.error?.message || `HTTP ${response.status}`);
     }
-    const data = await readJsonWithLimit(response);
+    const data = await readModelJson(response);
     return normalizeModelIds(data.data);
 }
 
