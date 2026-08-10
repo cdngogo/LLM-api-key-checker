@@ -510,6 +510,7 @@ watch(providerKeys, (keys) => {
     align-items: center;
     cursor: pointer;
     gap: 8px;
+    margin-bottom: 0;
     user-select: none;
 }
 
